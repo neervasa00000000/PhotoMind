@@ -90,7 +90,17 @@ jobs:
         run: npm run build
 
       - name: Build Tauri app
-        run: npm run tauri build -- --bundles ${{ matrix.bundle }}
+        run: npm run tauri build -- --bundles app
+
+      # Create DMG manually (macOS) - Tauri's bundle_dmg.sh fails
+      - name: Create DMG with hdiutil
+        if: matrix.platform == 'macos'
+        run: |
+          cd src-tauri/target/release/bundle
+          hdiutil create -volname "PhotoMind" \
+            -srcfolder macos/PhotoMind.app \
+            -ov -format UDZO \
+            dmg/PhotoMind_0.1.0_aarch64.dmg
 
       # Find and upload DMG (macOS)
       - name: Upload DMG artifact
