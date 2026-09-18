@@ -97,6 +97,7 @@ jobs:
         if: matrix.platform == 'macos'
         run: |
           cd src-tauri/target/release/bundle
+          mkdir -p dmg
           hdiutil create -volname "PhotoMind" \
             -srcfolder macos/PhotoMind.app \
             -ov -format UDZO \
