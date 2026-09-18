@@ -85,3 +85,9 @@ Legacy databases migrate every analysis metric used by indexing, including mean 
 ## AI throughput
 
 Photo analysis requests concise structured results and keeps the Ollama model resident for 15 minutes. It reuses HTTP connections and prior results for SHA-identical photos analysed with the same model. Visually similar photos are analysed independently. Rescanning edited content invalidates its AI result, and writes from in-flight analysis are rejected if the photo changed or moved to Bin. Cancellation drops the current HTTP wait promptly. Three consecutive inference failures stop the run instead of retrying every remaining photo. Vision-capable models are required. Actual throughput depends on the installed model and hardware; no whole-library timing guarantee is made.
+
+## License
+
+PhotoMind source code is released under the MIT License. See LICENSE.
+
+PhotoMind includes third-party components that retain their respective licenses. See THIRD_PARTY_LICENSES.md.
