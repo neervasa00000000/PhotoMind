@@ -47,3 +47,4 @@ eye-validation/**
 **/target/
 .qa/native-*/
 **/__pycache__/
+.qa/*.log
