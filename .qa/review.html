@@ -1,0 +1,43 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>PhotoMind isolated UI test</title></head><body><div id="root"></div>
+<script>
+// Isolated browser-only Tauri fixture. No real files or system Trash are touched.
+const photos = [
+ {id:'a',filename:'IMG_0001.JPG',absolute_path:'/QA/Album 2001/IMG_0001.JPG',sha256:'exact-pair'},
+ {id:'b',filename:'IMG_9999.JPG',absolute_path:'/QA/Album 2026/IMG_9999.JPG',sha256:'exact-pair'},
+ {id:'c',filename:'EXPORT_54321.JPG',absolute_path:'/QA/Exports/EXPORT_54321.JPG',sha256:'export'}
+].map(p=>({...p,is_kept:false,extension:'jpg',file_size:3500000,width:6000,height:4000,capture_time:'2026-09-17T00:00:00Z',thumbnail_path:null,sharpness:.8,exposure:.5,contrast:.6,highlight_clipping:.1,shadow_clipping:.1}));
+let bin=[]; let nextId=1;
+const live=()=>photos.filter(p=>!bin.some(b=>b.photo.id===p.id));
+const copy=p=>JSON.parse(JSON.stringify(p));
+const art=id=>'data:image/svg+xml;base64,'+btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000"><defs><linearGradient id="sky" x2="0" y2="1"><stop stop-color="#4991ac"/><stop offset="1" stop-color="#efcda3"/></linearGradient></defs><path fill="url(#sky)" d="M0 0h1600v1000H0z"/><circle cx="1150" cy="260" r="130" fill="#fff1c8"/><path fill="#334f65" d="M0 780L430 340l420 440 240-280 510 500H0z"/><path fill="#254c46" d="M0 860l630-220 970 360H0z"/><text x="60" y="110" font-family="sans-serif" font-size="55" fill="white">QA landscape ${id}</text></svg>`);
+window.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener:()=>{}};
+window.__TAURI_INTERNALS__={
+ transformCallback:()=>nextId++, unregisterCallback:()=>{},
+ invoke:async(command,args={})=>{
+  if(command==='check_ollama')return [];
+  if(command==='plugin:event|listen')return nextId++;
+  if(command==='plugin:event|unlisten')return;
+  if(command==='get_stats')return{total_photos:live().length,total_bytes:live().length*3500000,exact_duplicates:live().filter(p=>p.sha256==='exact-pair').length===2?1:0,exact_duplicates_bytes:3500000,recommended_removals:0,recommended_removals_bytes:0,needs_review:0};
+  if(command==='get_photos')return live().slice(args.offset??0,(args.offset??0)+(args.limit??200)).map(copy);
+  if(command==='get_duplicate_groups'){
+   const same=live().filter(p=>p.sha256==='exact-pair').sort((a,b)=>Number(b.is_kept)-Number(a.is_kept));
+   const result=same.length>1?[{sha256:'exact-pair',count:same.length,kind:'exact',photos:same.map(copy)}]:[];
+   if(live().length>1)result.push({sha256:'similar-global',count:live().length,kind:'similar',photos:live().map(copy)});
+   return result;
+  }
+  if(command==='get_moment_groups')return [];
+  if(command==='get_bin')return bin.map(copy);
+  if(command==='get_thumbnail_data_url'||command==='get_photo_preview')return art(args.id);
+  if(command==='choose_keeper'){photos.forEach(p=>{if(args.groupIds.includes(p.id))p.is_kept=p.id===args.photoId;});return;}
+  if(command==='move_to_trash'){
+   const ids=[];const errors=[];
+   for(const id of new Set(args.photoIds)){const p=live().find(p=>p.id===id);if(!p)continue;if(p.is_kept){errors.push(p.filename+' is kept');continue;}
+    bin.push({photo:copy(p),original_path:p.absolute_path,deleted_at:'2026-09-17 07:00:00',available:true});ids.push(id);}
+   return{photo_ids:ids,bytes:ids.length*3500000,errors};
+  }
+  if(command==='recover_photos'){const ids=args.photoIds.filter(id=>bin.some(b=>b.photo.id===id));bin=bin.filter(b=>!ids.includes(b.photo.id));return{photo_ids:ids,bytes:0,errors:[]};}
+  if(command==='plugin:dialog|message')return false;
+  throw new Error('Unexpected fixture command: '+command);
+ }
+};
+</script><script type="module" src="/src/main.tsx"></script></body></html>

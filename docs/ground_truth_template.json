@@ -1,0 +1,62 @@
+{
+  "_comment": "Ground truth labels for eye detection validation",
+  "_instructions": "For each photo, list all detected faces and manually label each eye as OPEN, CLOSED, or IGNORE",
+  
+  "example_frontal_open.jpg": [
+    {
+      "face": 0,
+      "left_eye": "OPEN",
+      "right_eye": "OPEN"
+    }
+  ],
+  
+  "example_frontal_closed.jpg": [
+    {
+      "face": 0,
+      "left_eye": "CLOSED",
+      "right_eye": "CLOSED"
+    }
+  ],
+  
+  "example_wink_left_closed.jpg": [
+    {
+      "face": 0,
+      "left_eye": "CLOSED",
+      "right_eye": "OPEN"
+    }
+  ],
+  
+  "example_group_photo.jpg": [
+    {
+      "face": 0,
+      "left_eye": "OPEN",
+      "right_eye": "OPEN"
+    },
+    {
+      "face": 1,
+      "left_eye": "CLOSED",
+      "right_eye": "CLOSED"
+    },
+    {
+      "face": 2,
+      "left_eye": "OPEN",
+      "right_eye": "OPEN"
+    }
+  ],
+  
+  "example_sunglasses.jpg": [
+    {
+      "face": 0,
+      "left_eye": "IGNORE",
+      "right_eye": "IGNORE"
+    }
+  ],
+  
+  "example_one_eye_occluded.jpg": [
+    {
+      "face": 0,
+      "left_eye": "IGNORE",
+      "right_eye": "OPEN"
+    }
+  ]
+}

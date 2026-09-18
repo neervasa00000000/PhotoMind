@@ -1,0 +1,67 @@
+[package]
+name = "tauri-app"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "tauri_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+walkdir = "2.5.0"
+sqlx = { version = "0.9.0", features = ["sqlite", "runtime-tokio", "tls-native-tls", "chrono"] }
+image = "0.25.10"
+kamadak-exif = "0.6.1"
+sha2 = "0.11.0"
+hex = "0.4.3"
+uuid = { version = "1.26.1", features = ["v4", "fast-rng"] }
+chrono = { version = "0.4.45", features = ["serde"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+reqwest = { version = "0.13.5", features = ["json"] }
+base64 = "0.23.1"
+trash = "5.2.9"
+rawler = "0.8"
+rav1d = { version = "1.1.0", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
+avif-parse = "2.1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+sys-info = "0.9"
+libc = "0.2"
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "download-binaries", "tls-native", "copy-dylibs", "api-27"] }
+ndarray = { version = "0.16", features = ["std"] }
+
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSFileManager", "NSURL", "NSString", "NSError"] }
+
+[[bin]]
+name = "validate_eyes"
+path = "src/bin/validate_eyes.rs"
+
+[[bin]]
+name = "label_eyes"
+path = "src/bin/label_eyes.rs"
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "unwind"
+strip = true

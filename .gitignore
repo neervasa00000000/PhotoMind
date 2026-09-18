@@ -1,0 +1,49 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Dev-only test fixtures (downloaded at development time, never shipped)
+src-tauri/fixtures/*
+!src-tauri/fixtures/README.md
+!src-tauri/fixtures/raw_manifest.tsv
+
+# Eye detection validation — NEVER commit private photos, crops, labels, or reports.
+# This whole folder is local-only. Do not force-add anything inside it.
+eye-validation/
+eye-validation/**
+**/eye-validation/photos/
+**/eye-validation/crops/
+**/eye-validation/ground_truth.json
+**/eye-validation/failure-review.html
+**/eye-validation/results/
+
+# Local user data and generated caches never belong in source control.
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/thumbnails/
+**/.ollama/
+**/target/
+.qa/native-*/
+**/__pycache__/
