@@ -54,9 +54,13 @@ rm -f "$OUT"
 hdiutil create -volname "PhotoMind" -srcfolder "$STAGE" -ov -format UDZO "$OUT"
 echo "Created: $OUT"
 ls -lh "$OUT"
-MOUNT=$(hdiutil attach "$OUT" -nobrowse | awk 'END{print $NF}')
+MNT="$(mktemp -d)"
+hdiutil attach "$OUT" -nobrowse -mountpoint "$MNT" -quiet
 echo "DMG contents:"
-ls -la "$MOUNT"
+ls -la "$MNT"
 echo "Installer Resources:"
-ls -la "$MOUNT/Install PhotoMind.app/Contents/Resources" | head -20
-hdiutil detach "$MOUNT" >/dev/null
+ls -la "$MNT/Install PhotoMind.app/Contents/Resources" | head -20
+test -d "$MNT/Install PhotoMind.app/Contents/Resources/PhotoMind.app"
+test -f "$MNT/Install PhotoMind.app/Contents/Resources/install-photomind.sh"
+hdiutil detach "$MNT" -quiet
+rmdir "$MNT" 2>/dev/null || true
