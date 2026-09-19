@@ -20,7 +20,15 @@ Or:
 
 ## How to Open PhotoMind (Unsigned)
 
-### Method 1: Right-Click Override (Recommended)
+### Method 1: One-click installer (Recommended)
+
+From v0.1.2 onward, the DMG includes **Install PhotoMind.command**:
+
+1. Open the DMG
+2. Double-click **Install PhotoMind.command** (click Open if macOS asks)
+3. PhotoMind is copied to Applications, quarantine is cleared, and the app launches
+
+### Method 2: Right-Click Override
 
 1. Locate PhotoMind in Applications
 2. **Right-click** (or Control-click) on PhotoMind.app
@@ -28,7 +36,7 @@ Or:
 4. Click **"Open"** in the security dialog
 5. PhotoMind will launch and remember your choice
 
-### Method 2: System Settings
+### Method 3: System Settings
 
 1. Try to open PhotoMind normally (it will be blocked)
 2. Open **System Settings → Privacy & Security**
@@ -36,10 +44,11 @@ Or:
 4. Click **"Open Anyway"** next to the PhotoMind message
 5. Confirm by clicking **"Open"**
 
-### Method 3: Remove Quarantine Flag (Advanced)
+### Method 4: Remove Quarantine Flag (Terminal)
 
 ```bash
 xattr -cr /Applications/PhotoMind.app
+open /Applications/PhotoMind.app
 ```
 
 This removes macOS's quarantine attribute. Use only if you trust the source.

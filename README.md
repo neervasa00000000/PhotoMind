@@ -10,37 +10,25 @@ PhotoMind helps you organize your photo library, find duplicates, and identify y
 
 **[Download latest release →](https://github.com/neervasa00000000/PhotoMind/releases/latest)**
 
-#### Installation Steps:
+#### Installation Steps (easy):
 
-1. Download `PhotoMind_0.1.1_macOS.dmg`
-2. Open the DMG file
-3. Drag PhotoMind to your Applications folder
-4. **Eject the DMG** (important!)
-5. Open Applications folder
+1. Download the latest `.dmg` from Releases
+2. Open the DMG
+3. Double-click **Install PhotoMind.command**
+4. If macOS asks, click **Open**
+5. PhotoMind installs and launches automatically
 
-#### First Launch (IMPORTANT):
+That’s it — the installer clears macOS’s download quarantine so you don’t get the fake “damaged” warning.
 
-⚠️ **PhotoMind is unsigned**. macOS will block it with a warning like "PhotoMind is damaged" or "cannot be opened."
+#### If you prefer drag-and-drop:
 
-**This is normal!** The app is not damaged. Follow these steps:
+1. Drag `PhotoMind.app` to Applications
+2. Eject the DMG
+3. In Terminal run: `xattr -cr /Applications/PhotoMind.app && open /Applications/PhotoMind.app`
 
-**Option 1 (Easiest):**
-- **Right-click** (or Control-click) PhotoMind.app
-- Choose **"Open"** from the menu
-- Click **"Open"** in the dialog
-- ✅ PhotoMind will launch and remember your choice
+⚠️ PhotoMind is open-source and not Apple-notarized yet. Opening the `.app` directly from a Brave/Safari download can show “damaged” — use **Install PhotoMind.command** instead.
 
-**Option 2 (If that doesn't work):**
-- Open **System Settings → Privacy & Security**
-- Scroll down to find PhotoMind message
-- Click **"Open Anyway"**
-
-**Option 3 (Advanced - removes quarantine):**
-```bash
-xattr -cr /Applications/PhotoMind.app
-```
-
-📖 **Detailed help:** See [macOS Release Notes](docs/MACOS_RELEASE.md)
+📖 **Details:** [macOS Release Notes](docs/MACOS_RELEASE.md)
 
 ### Windows
 
@@ -48,7 +36,7 @@ xattr -cr /Applications/PhotoMind.app
 
 #### Installation Steps:
 
-1. Download `PhotoMind_0.1.0_x64-setup.msi`
+1. Download `PhotoMind_0.1.2_x64_en-US.msi` (or the latest `.msi` on the release page)
 2. Double-click the MSI file
 3. Follow the installation wizard
 4. PhotoMind will be installed to `C:\Program Files\PhotoMind`

@@ -25,7 +25,9 @@ jobs:
           - os: macos-latest
             platform: macos
             target: aarch64-apple-darwin
-            bundle: dmg
+            # Build .app only; we package a user-friendly DMG ourselves
+            # (ad-hoc sign + one-click Install script that clears quarantine).
+            bundle: app
 
           - os: windows-latest
             platform: windows
@@ -92,32 +94,18 @@ jobs:
       - name: Build Tauri app
         run: npm run tauri build -- --bundles ${{ matrix.bundle }}
 
-      # macOS: prefer Tauri's DMG. If bundle_dmg.sh fails, fall back to hdiutil
-      # using the .app (rebuild app-only if needed).
-      - name: Ensure macOS DMG exists
+      # macOS: package friendly DMG (ad-hoc sign + Install PhotoMind.command)
+      - name: Package macOS DMG
         if: matrix.platform == 'macos'
         run: |
           set -euo pipefail
-          BUNDLE_DIR="src-tauri/target/release/bundle"
-          mkdir -p "$BUNDLE_DIR/dmg"
-          if ls "$BUNDLE_DIR"/dmg/*.dmg >/dev/null 2>&1; then
-            echo "Tauri DMG ready:"
-            ls -lh "$BUNDLE_DIR"/dmg/*.dmg
-            exit 0
-          fi
-          echo "No Tauri DMG found; building .app then packaging with hdiutil..."
-          npm run tauri build -- --bundles app
-          hdiutil create -volname "PhotoMind" \
-            -srcfolder "$BUNDLE_DIR/macos/PhotoMind.app" \
-            -ov -format UDZO \
-            "$BUNDLE_DIR/dmg/PhotoMind_${{ github.ref_name }}_aarch64.dmg"
-          # Strip leading 'v' from tag in filename if present
           TAG="${GITHUB_REF_NAME#v}"
-          if [ -f "$BUNDLE_DIR/dmg/PhotoMind_${{ github.ref_name }}_aarch64.dmg" ]; then
-            mv "$BUNDLE_DIR/dmg/PhotoMind_${{ github.ref_name }}_aarch64.dmg" \
-               "$BUNDLE_DIR/dmg/PhotoMind_${TAG}_aarch64.dmg" || true
-          fi
-          ls -lh "$BUNDLE_DIR"/dmg/*.dmg
+          chmod +x scripts/macos/package-dmg.sh
+          ./scripts/macos/package-dmg.sh \
+            src-tauri/target/release/bundle/macos/PhotoMind.app \
+            "$TAG" \
+            src-tauri/target/release/bundle/dmg
+          ls -lh src-tauri/target/release/bundle/dmg/*.dmg
 
       # Find and upload DMG (macOS)
       - name: Upload DMG artifact
