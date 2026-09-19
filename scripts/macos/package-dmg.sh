@@ -38,24 +38,43 @@ ln -sf /Applications "$STAGE/Applications"
 
 cat > "$STAGE/READ ME FIRST.txt" << 'TXT'
 ========================================
-  PhotoMind — install in 2 clicks
+  PhotoMind — how to install on Mac
 ========================================
 
-DO NOT open PhotoMind.app from this window.
-macOS will block it (looks like malware — it is not).
+Apple blocks unsigned downloads. Double-click and
+even Right-click → Open may only show "Done".
+That is normal. The app is NOT malware.
 
-INSTEAD:
+----------------------------------------
+EASIEST METHOD (macOS Sequoia / recent Macs)
+----------------------------------------
 
-1. Right-click  "Install PhotoMind.app"
-2. Click        "Open"
-3. Click        "Open" again if asked
+1. Double-click "Install PhotoMind.app" once
+   (you will see the warning — click Done)
 
-That installs PhotoMind to Applications and opens it.
+2. Open System Settings → Privacy & Security
 
-Why right-click?
-Apple blocks double-click for apps that are not notarized.
-Right-click → Open is the normal way for open-source Mac apps.
+3. Scroll down to the Security section
 
+4. Click "Open Anyway" next to Install PhotoMind
+
+5. Confirm Open
+
+PhotoMind installs to Applications and launches.
+
+----------------------------------------
+ALTERNATIVE (Terminal — always works)
+----------------------------------------
+
+1. Keep this DMG window open
+2. Open Terminal
+3. Paste this and press Return:
+
+xattr -cr /Volumes/PhotoMind && /Volumes/PhotoMind/install-photomind.sh
+
+----------------------------------------
+
+Do NOT try to open a hidden PhotoMind.app yourself.
 Need help? https://github.com/neervasa00000000/PhotoMind
 TXT
 
