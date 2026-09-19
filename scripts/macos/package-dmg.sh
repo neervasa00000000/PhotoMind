@@ -6,7 +6,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 APP="${1:-$ROOT/src-tauri/target/release/bundle/macos/PhotoMind.app}"
-VERSION="${2:-0.1.4}"
+VERSION="${2:-0.1.0}"
 OUT_DIR="${3:-$ROOT/src-tauri/target/release/bundle/dmg}"
 STAGE="$(mktemp -d)/PhotoMind"
 DMG_NAME="PhotoMind_${VERSION}_macOS.dmg"
