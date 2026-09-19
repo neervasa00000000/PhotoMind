@@ -92,16 +92,32 @@ jobs:
       - name: Build Tauri app
         run: npm run tauri build -- --bundles ${{ matrix.bundle }}
 
-      # Create DMG manually (macOS) - Tauri's bundle_dmg.sh fails
-      - name: Create DMG with hdiutil
+      # macOS: prefer Tauri's DMG. If bundle_dmg.sh fails, fall back to hdiutil
+      # using the .app (rebuild app-only if needed).
+      - name: Ensure macOS DMG exists
         if: matrix.platform == 'macos'
         run: |
-          cd src-tauri/target/release/bundle
-          mkdir -p dmg
+          set -euo pipefail
+          BUNDLE_DIR="src-tauri/target/release/bundle"
+          mkdir -p "$BUNDLE_DIR/dmg"
+          if ls "$BUNDLE_DIR"/dmg/*.dmg >/dev/null 2>&1; then
+            echo "Tauri DMG ready:"
+            ls -lh "$BUNDLE_DIR"/dmg/*.dmg
+            exit 0
+          fi
+          echo "No Tauri DMG found; building .app then packaging with hdiutil..."
+          npm run tauri build -- --bundles app
           hdiutil create -volname "PhotoMind" \
-            -srcfolder macos/PhotoMind.app \
+            -srcfolder "$BUNDLE_DIR/macos/PhotoMind.app" \
             -ov -format UDZO \
-            dmg/PhotoMind_0.1.0_aarch64.dmg
+            "$BUNDLE_DIR/dmg/PhotoMind_${{ github.ref_name }}_aarch64.dmg"
+          # Strip leading 'v' from tag in filename if present
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ -f "$BUNDLE_DIR/dmg/PhotoMind_${{ github.ref_name }}_aarch64.dmg" ]; then
+            mv "$BUNDLE_DIR/dmg/PhotoMind_${{ github.ref_name }}_aarch64.dmg" \
+               "$BUNDLE_DIR/dmg/PhotoMind_${TAG}_aarch64.dmg" || true
+          fi
+          ls -lh "$BUNDLE_DIR"/dmg/*.dmg
 
       # Find and upload DMG (macOS)
       - name: Upload DMG artifact
