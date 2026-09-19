@@ -44,11 +44,21 @@ xattr -cr /Applications/PhotoMind.app
 
 ### Windows
 
-Coming soon
+**[Download latest release →](https://github.com/neervasa00000000/PhotoMind/releases/latest)**
+
+#### Installation Steps:
+
+1. Download `PhotoMind_0.1.0_x64-setup.msi`
+2. Double-click the MSI file
+3. Follow the installation wizard
+4. PhotoMind will be installed to `C:\Program Files\PhotoMind`
+5. Launch from Start Menu or Desktop shortcut
+
+**Note:** Windows may show SmartScreen warnings for unsigned installers. Click "More info" → "Run anyway" if prompted.
 
 ### Linux
 
-Coming soon
+Coming soon (Ubuntu .deb and AppImage planned)
 
 ## What PhotoMind Does
 
