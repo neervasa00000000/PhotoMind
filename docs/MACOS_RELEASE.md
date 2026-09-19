@@ -20,13 +20,16 @@ Or:
 
 ## How to Open PhotoMind (Unsigned)
 
-### Method 1: One-click installer (Recommended)
+### Method 1: Installer app (Recommended)
 
-From v0.1.2 onward, the DMG includes **Install PhotoMind.command**:
+From v0.1.3 onward, the DMG hides the raw app and shows **Install PhotoMind.app**:
 
 1. Open the DMG
-2. Double-click **Install PhotoMind.command** (click Open if macOS asks)
-3. PhotoMind is copied to Applications, quarantine is cleared, and the app launches
+2. **Right-click** `Install PhotoMind.app`
+3. Choose **Open**, then **Open** again if asked
+4. PhotoMind is installed to Applications and launched
+
+Do not double-click `PhotoMind.app` from the DMG (it is hidden on purpose). Dragging alone does not clear Gatekeeper.
 
 ### Method 2: Right-Click Override
 
