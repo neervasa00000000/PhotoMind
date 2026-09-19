@@ -90,7 +90,7 @@ jobs:
         run: npm run build
 
       - name: Build Tauri app
-        run: npm run tauri build -- --bundles app
+        run: npm run tauri build -- --bundles ${{ matrix.bundle }}
 
       # Create DMG manually (macOS) - Tauri's bundle_dmg.sh fails
       - name: Create DMG with hdiutil
