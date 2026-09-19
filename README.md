@@ -12,7 +12,7 @@ PhotoMind helps you organize your photo library, find duplicates, and identify y
 
 #### Installation Steps:
 
-1. Download `PhotoMind_0.1.0_macOS.dmg`
+1. Download `PhotoMind_0.1.1_macOS.dmg`
 2. Open the DMG file
 3. Drag PhotoMind to your Applications folder
 4. **Eject the DMG** (important!)
