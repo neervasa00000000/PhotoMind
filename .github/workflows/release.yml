@@ -189,10 +189,9 @@ jobs:
 
           1. Download `PhotoMind_${{ steps.version.outputs.version }}_macOS.dmg`
           2. Open the DMG
-          3. **Right-click** `Install PhotoMind.app` → **Open** → **Open**
-
-          Do **not** open PhotoMind.app from the DMG — macOS will block unsigned downloads.
-          The installer copies the app and clears Gatekeeper quarantine for you.
+          3. Double-click `Install PhotoMind.app` → click Done on the warning
+          4. System Settings → Privacy & Security → **Open Anyway**
+             Or double-click `install-via-terminal.command`
 
           See [macOS Release Notes](https://github.com/neervasa00000000/PhotoMind/blob/main/docs/MACOS_RELEASE.md).
 
