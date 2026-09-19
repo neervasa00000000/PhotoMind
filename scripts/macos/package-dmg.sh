@@ -1,13 +1,13 @@
 #!/bin/bash
-# Package a Gatekeeper-friendlier unsigned macOS DMG:
-# - ad-hoc codesign the .app
-# - include one-click Install PhotoMind.command (clears quarantine)
-# - include Applications shortcut
+# Package a user-friendly unsigned macOS DMG:
+# - Hide PhotoMind.app in .payload (so users don't open the quarantined app)
+# - Ship Install PhotoMind.app that copies + clears quarantine
+# - Clear first-open instructions in READ ME FIRST.txt
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 APP="${1:-$ROOT/src-tauri/target/release/bundle/macos/PhotoMind.app}"
-VERSION="${2:-0.1.2}"
+VERSION="${2:-0.1.3}"
 OUT_DIR="${3:-$ROOT/src-tauri/target/release/bundle/dmg}"
 STAGE="$(mktemp -d)/PhotoMind"
 DMG_NAME="PhotoMind_${VERSION}_macOS.dmg"
@@ -17,35 +17,46 @@ if [ ! -d "$APP" ]; then
   exit 1
 fi
 
-mkdir -p "$STAGE" "$OUT_DIR"
-rm -rf "$STAGE/PhotoMind.app"
-cp -R "$APP" "$STAGE/PhotoMind.app"
+mkdir -p "$STAGE/.payload" "$OUT_DIR"
+rm -rf "$STAGE/.payload/PhotoMind.app"
+cp -R "$APP" "$STAGE/.payload/PhotoMind.app"
 
-# Ad-hoc sign (no Apple Developer cert required). Helps Gatekeeper treat the
-# bundle as a coherent signed object instead of "damaged".
-codesign --force --deep --sign - "$STAGE/PhotoMind.app"
-xattr -cr "$STAGE/PhotoMind.app" || true
+codesign --force --deep --sign - "$STAGE/.payload/PhotoMind.app"
+xattr -cr "$STAGE/.payload/PhotoMind.app" || true
 
-cp "$ROOT/scripts/macos/Install PhotoMind.command" "$STAGE/"
-chmod +x "$STAGE/Install PhotoMind.command"
+# Helper script used by the Install app
+cp "$ROOT/scripts/macos/install-photomind.sh" "$STAGE/install-photomind.sh"
+chmod +x "$STAGE/install-photomind.sh"
+
+# Build a real .app installer (clearer than a .command file)
+osacompile -o "$STAGE/Install PhotoMind.app" "$ROOT/scripts/macos/Install PhotoMind.applescript"
+# Give the installer a generic app icon feel; keep it ad-hoc signed
+codesign --force --deep --sign - "$STAGE/Install PhotoMind.app" || true
+xattr -cr "$STAGE/Install PhotoMind.app" || true
+
 ln -sf /Applications "$STAGE/Applications"
 
-# README for users who open the DMG
-cat > "$STAGE/HOW TO INSTALL.txt" << 'TXT'
-PhotoMind — how to install (macOS)
+cat > "$STAGE/READ ME FIRST.txt" << 'TXT'
+========================================
+  PhotoMind — install in 2 clicks
+========================================
 
-1. Double-click "Install PhotoMind.command"
-2. If macOS asks, click Open
-3. PhotoMind installs and launches automatically
+DO NOT open PhotoMind.app from this window.
+macOS will block it (looks like malware — it is not).
 
-If that fails:
-- Drag PhotoMind.app to Applications
-- Open Terminal and run:
-  xattr -cr /Applications/PhotoMind.app
-  open /Applications/PhotoMind.app
+INSTEAD:
 
-Why? PhotoMind is open-source and not yet Apple-notarized.
-macOS blocks unsigned downloads until quarantine is cleared.
+1. Right-click  "Install PhotoMind.app"
+2. Click        "Open"
+3. Click        "Open" again if asked
+
+That installs PhotoMind to Applications and opens it.
+
+Why right-click?
+Apple blocks double-click for apps that are not notarized.
+Right-click → Open is the normal way for open-source Mac apps.
+
+Need help? https://github.com/neervasa00000000/PhotoMind
 TXT
 
 OUT="$OUT_DIR/$DMG_NAME"
@@ -53,3 +64,8 @@ rm -f "$OUT"
 hdiutil create -volname "PhotoMind" -srcfolder "$STAGE" -ov -format UDZO "$OUT"
 echo "Created: $OUT"
 ls -lh "$OUT"
+# List DMG contents for CI logs
+MOUNT=$(hdiutil attach "$OUT" -nobrowse | awk 'END{print $NF}')
+echo "DMG contents:"
+ls -la "$MOUNT"
+hdiutil detach "$MOUNT" >/dev/null

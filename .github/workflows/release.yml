@@ -171,19 +171,9 @@ jobs:
 
           ## What's New in v${{ steps.version.outputs.version }}
 
-          This is the first public release of PhotoMind.
-
-          ### Features
-
-          - 📁 Scan photo folders and subfolders automatically
-          - 🔍 Find exact duplicates using SHA-256 hashing
-          - 👀 Detect visually similar photos for review
-          - 📸 Group photos by moments (time-based)
-          - 📊 Analyze technical quality (sharpness, exposure, saturation)
-          - 🎯 Get Keep/Review recommendations
-          - 🗑️ Move photos to Bin with easy recovery
-          - 👤 Local face detection (YuNet model)
-          - 🔒 Completely private—all processing on your device
+          - macOS one-click installer that clears Gatekeeper quarantine
+          - Windows MSI installer
+          - Local-first photo culling (duplicates, similar shots, moments, quality)
 
           ### Eye Analysis Status
 
@@ -197,28 +187,34 @@ jobs:
 
           ### macOS
 
-          **Note:** This release is unsigned. macOS will show a security warning on first launch.
-
           1. Download `PhotoMind_${{ steps.version.outputs.version }}_macOS.dmg`
           2. Open the DMG
-          3. Drag PhotoMind to Applications
-          4. Right-click PhotoMind and choose "Open" to bypass security warning
+          3. **Right-click** `Install PhotoMind.app` → **Open** → **Open**
 
-          See [macOS Release Notes](https://github.com/neervasa00000000/PhotoMind/blob/main/docs/MACOS_RELEASE.md) for details.
+          Do **not** open PhotoMind.app from the DMG — macOS will block unsigned downloads.
+          The installer copies the app and clears Gatekeeper quarantine for you.
 
-          ### Windows / Linux
+          See [macOS Release Notes](https://github.com/neervasa00000000/PhotoMind/blob/main/docs/MACOS_RELEASE.md).
 
-          Coming in future releases.
+          ### Windows
+
+          1. Download the `.msi` from this release
+          2. Run the installer
+          3. If SmartScreen appears: More info → Run anyway
+
+          ### Linux
+
+          Coming in a future release.
 
           ## Requirements
 
-          - macOS 11+ (Big Sur or later)
+          - macOS 11+ or Windows 10+
           - No Node.js, Rust, or Ollama required
           - Works completely offline
 
           ## Known Issues
 
-          - macOS unsigned app warning (expected—see installation notes)
+          - Not Apple-notarized / not Microsoft-signed (use the installers above)
           - HEIC/HEIF pixel analysis incomplete
           - Eye analysis experimental (disabled for ranking)
 

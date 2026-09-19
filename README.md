@@ -10,23 +10,16 @@ PhotoMind helps you organize your photo library, find duplicates, and identify y
 
 **[Download latest release →](https://github.com/neervasa00000000/PhotoMind/releases/latest)**
 
-#### Installation Steps (easy):
+#### Installation (easy — 2 clicks):
 
-1. Download the latest `.dmg` from Releases
-2. Open the DMG
-3. Double-click **Install PhotoMind.command**
-4. If macOS asks, click **Open**
-5. PhotoMind installs and launches automatically
+1. Download the latest **`.dmg`** from Releases  
+2. Open the DMG  
+3. **Right-click** `Install PhotoMind.app` → **Open** → **Open**
 
-That’s it — the installer clears macOS’s download quarantine so you don’t get the fake “damaged” warning.
+PhotoMind installs itself and launches.  
+Do **not** open `PhotoMind.app` from the DMG or from Downloads — macOS will block it.
 
-#### If you prefer drag-and-drop:
-
-1. Drag `PhotoMind.app` to Applications
-2. Eject the DMG
-3. In Terminal run: `xattr -cr /Applications/PhotoMind.app && open /Applications/PhotoMind.app`
-
-⚠️ PhotoMind is open-source and not Apple-notarized yet. Opening the `.app` directly from a Brave/Safari download can show “damaged” — use **Install PhotoMind.command** instead.
+⚠️ PhotoMind is open-source and not Apple-notarized. Right-click → Open is normal for unsigned Mac apps.
 
 📖 **Details:** [macOS Release Notes](docs/MACOS_RELEASE.md)
 
