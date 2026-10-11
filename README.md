@@ -28,13 +28,14 @@ Or double-click **`install-via-terminal.command`** in the DMG (most reliable).
 
 #### Installation Steps:
 
-1. Download `PhotoMind_0.1.2_x64_en-US.msi` (or the latest `.msi` on the release page)
+1. Download the latest `PhotoMind_*_x64_en-US.msi` from Releases
 2. Double-click the MSI file
 3. Follow the installation wizard
 4. PhotoMind will be installed to `C:\Program Files\PhotoMind`
 5. Launch from Start Menu or Desktop shortcut
 
 **Note:** Windows may show SmartScreen warnings for unsigned installers. Click "More info" → "Run anyway" if prompted.
+The Windows installer includes the WebView2 offline installer, so setup does not need to download a runtime. Face detection and People grouping need no separate AI software or model download.
 
 ### Linux
 
@@ -49,6 +50,7 @@ PhotoMind scans your photo folders and helps you:
 - **Organize by moments** – Automatically groups photos taken close together in time
 - **Measure technical quality** – Analyzes sharpness, exposure, clipping, and saturation
 - **Identify stronger shots** – Provides Keep/Review recommendations based on local analysis
+- **Review possible same-person groups** – Compare detected face crops across photos in the People tab
 - **Clean up safely** – Move unwanted photos to Bin with easy recovery
 
 ### Local & Private
@@ -61,7 +63,7 @@ PhotoMind scans your photo folders and helps you:
 
 ### Face Analysis
 
-PhotoMind includes local face detection to help identify photos with people. Eye-state analysis is currently **experimental** and does not affect ranking while validation is ongoing. Face detection runs locally using the YuNet model.
+PhotoMind includes local face detection to help identify photos with people. The People tab compares detected face crops locally and shows only strong possible same-person matches. These are suggestions, not verified identities; similar-looking people may appear together and changes in lighting or pose may prevent a match. Face descriptors remain in the local SQLite database. Eye-state analysis is currently **experimental** and does not affect ranking while validation is ongoing. Face detection runs locally using the bundled YuNet model.
 
 ## How To Use
 
@@ -69,7 +71,7 @@ PhotoMind includes local face detection to help identify photos with people. Eye
 2. **Open** the application
 3. **Choose a folder** to scan your photos
 4. **Wait** while PhotoMind analyzes your library (processing happens automatically)
-5. **Review** exact duplicates, visual matches, and moment groups
+5. **Review** exact duplicates, visual matches, moment groups, and possible same-person groups
 6. **Keep** your best shots and move others to Bin
 7. **Recover** or permanently delete from the Bin tab
 
@@ -86,9 +88,10 @@ PhotoMind works with JPEG, PNG, RAW formats (CR2, CR3, NEF, ARW, RAF, etc.), HEI
 ### Building from Source
 
 **Requirements:**
-- Node.js 18+
-- Rust 1.70+
+- Node.js 22+
+- A current stable Rust toolchain
 - npm or pnpm
+- Windows builds: Windows 10/11 with the MSVC C++ build tools
 
 **Build instructions:**
 
@@ -107,6 +110,7 @@ npm run tauri build
 ```
 
 The built macOS app will be at `src-tauri/target/release/bundle/macos/PhotoMind.app`.
+On Windows, `npm run tauri build -- --bundles msi` creates an installer under `src-tauri/target/release/bundle/msi/`. Release tags build both platforms in GitHub Actions.
 
 ### Testing
 
@@ -138,7 +142,7 @@ PhotoMind is built with:
 - **Image Processing:** Rust image libraries
 - **Face Detection:** YuNet (ONNX model, MIT licensed)
 
-Core analysis (hashing, perceptual hashing, technical quality metrics, face detection) runs entirely locally. Optional Ollama integration for advanced AI analysis is experimental and not required.
+Hashing, visual matching, technical quality analysis, face detection, and possible same-person grouping run on the device. No LLM or remote service is used.
 
 ### CI/CD
 
@@ -159,4 +163,4 @@ PhotoMind includes third-party components that retain their respective licenses.
 
 ---
 
-**Privacy:** PhotoMind processes your photos locally. No data is sent to external servers unless you explicitly enable optional Ollama integration (which requires a separate local Ollama installation).
+**Privacy:** PhotoMind processes your photos locally and does not send them to external servers.

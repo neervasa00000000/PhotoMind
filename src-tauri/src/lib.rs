@@ -14,12 +14,12 @@ pub mod eye_validation;
 pub mod face_analysis;
 pub mod face_db;
 pub mod faces;
-pub mod heic_macos;
 pub mod guard;
+pub mod heic_macos;
 pub mod ingest;
 pub mod junk;
 pub mod models;
-pub mod ollama;
+pub mod people;
 pub mod scanner;
 pub mod similarity;
 
@@ -34,8 +34,6 @@ struct AppState {
     is_scanning: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
     is_cancelled: Arc<AtomicBool>,
-    ai_is_running: Arc<AtomicBool>,
-    ai_is_cancelled: Arc<AtomicBool>,
 }
 
 fn acquire_scan_lock(path: &std::path::Path) -> Result<std::fs::File, String> {
@@ -250,279 +248,6 @@ async fn get_moment_groups(
 }
 
 #[tauri::command]
-async fn check_ollama() -> Result<Vec<ollama::OllamaModel>, String> {
-    ollama::check_ollama_status().await
-}
-
-#[tauri::command]
-async fn test_analyze_photo(
-    model: String,
-    photo_path: String,
-    state: State<'_, AppState>,
-) -> Result<ollama::AnalysisResult, String> {
-    let result = ollama::analyze_photo(&model, &photo_path).await?;
-    let photo_id: Option<String> =
-        sqlx::query_scalar("SELECT id FROM photos WHERE absolute_path = ?")
-            .bind(&photo_path)
-            .fetch_optional(&state.db_pool)
-            .await
-            .map_err(|e| e.to_string())?;
-    if let Some(id) = photo_id {
-        let json = serde_json::to_string(&result).unwrap_or_else(|_| String::new());
-        let _ = sqlx::query(
-            "INSERT OR REPLACE INTO photo_ai_results (photo_id, model, analysis_json, analyzed_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)"
-        ).bind(&id).bind(&model).bind(&json).execute(&state.db_pool).await;
-    }
-    Ok(result)
-}
-
-/// Run Ollama vision analysis across the active library (skipping photos that
-/// already have saved results), streaming progress to the frontend.
-///
-/// `quiet` marks background runs (e.g. the scan's auto-trigger): Ollama being
-/// absent then is not an error — the run just finishes with nothing done, so a
-/// successful scan never produces a scary failure banner. Manual runs keep the
-/// informative error so the user is told how to enable AI.
-async fn run_ai_analysis(
-    pool: sqlx::SqlitePool,
-    app_handle: tauri::AppHandle,
-    is_cancelled: Arc<AtomicBool>,
-    quiet: bool,
-) {
-    use tauri::Emitter;
-    let _ = app_handle.emit(
-        "ai-progress",
-        json!({
-            "processed": 0, "total": 0, "model": "", "current_file": "Preparing AI analysis..."
-        }),
-    );
-
-    let unavailable = |message: String| {
-        if quiet {
-            let _ = app_handle.emit(
-                "ai-complete",
-                json!({
-                    "processed": 0, "total": 0, "failed": 0, "skipped": true
-                }),
-            );
-        } else {
-            let _ = app_handle.emit("ai-error", json!({ "message": message, "total": 0 }));
-        }
-    };
-
-    let model = match ollama::best_vision_model().await {
-        Ok(Some(model)) => model,
-        Ok(None) => {
-            unavailable("No Ollama vision model installed. Add one (e.g. llama3.2-vision) and run 'AI Analysis' manually.".to_string());
-            return;
-        }
-        Err(error) => {
-            unavailable(format!("Ollama unavailable: {error}"));
-            return;
-        }
-    };
-
-    let photos: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT p.id, p.absolute_path, p.sha256 FROM photos p
-         WHERE substr(p.filename, 1, 2) != '._'
-           AND NOT EXISTS (SELECT 1 FROM bin_entries b WHERE b.photo_id = p.id)
-           AND NOT EXISTS (SELECT 1 FROM photo_ai_results r WHERE r.photo_id = p.id)
-         ORDER BY COALESCE(p.capture_time, p.created_at) DESC",
-    )
-    .fetch_all(&pool)
-    .await
-    .unwrap_or_default();
-
-    let total = photos.len();
-    if total == 0 {
-        let _ = app_handle.emit(
-            "ai-complete",
-            json!({ "processed": 0, "total": 0, "failed": 0 }),
-        );
-        return;
-    }
-
-    let mut processed = 0usize;
-    let mut failed = 0usize;
-    let mut consecutive_failures = 0usize;
-    let mut last_service_error: Option<String> = None;
-    let mut first_error: Option<String> = None;
-
-    for (id, path, hash) in photos {
-        if is_cancelled.load(Ordering::SeqCst) {
-            break;
-        }
-        let cached = db::reusable_ai_result(&pool, hash.as_deref(), &model)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|result| serde_json::from_str::<ollama::AnalysisResult>(&result).ok());
-        let result = if let Some(result) = cached {
-            Ok(result)
-        } else {
-            tokio::select! {
-                result = ollama::analyze_photo_detailed(&model, &path) => result,
-                _ = async { while !is_cancelled.load(Ordering::SeqCst) { tokio::time::sleep(std::time::Duration::from_millis(100)).await; } } => break,
-            }
-        };
-        match result {
-            Ok(analysis) => {
-                consecutive_failures = 0;
-                match serde_json::to_string(&analysis) {
-                    Ok(result) => {
-                        match db::save_ai_result(&pool, &id, hash.as_deref(), &model, &result).await
-                        {
-                            Ok(true) => processed += 1,
-                            Ok(false) => failed += 1,
-                            Err(error) => {
-                                failed += 1;
-                                first_error.get_or_insert(error.to_string());
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        failed += 1;
-                        first_error.get_or_insert(error.to_string());
-                    }
-                }
-            }
-            Err(error) => {
-                if error.is_service_failure() {
-                    consecutive_failures += 1;
-                    last_service_error = Some(error.to_string());
-                } else {
-                    consecutive_failures = 0;
-                }
-                failed += 1;
-                if first_error.is_none() {
-                    first_error = Some(error.to_string());
-                }
-            }
-        }
-        if consecutive_failures >= 3 {
-            let _ = app_handle.emit("ai-error", json!({"message": format!("AI paused after three consecutive Ollama service failures. {}", last_service_error.as_deref().unwrap_or("Check Ollama and try again."))}));
-            return;
-        }
-        let _ = app_handle.emit(
-            "ai-progress",
-            json!({
-                "processed": processed + failed, "total": total, "model": model,
-                "current_file": path.rsplit(['/', '\\']).next().unwrap_or("")
-            }),
-        );
-    }
-
-    if is_cancelled.load(Ordering::SeqCst) {
-        let _ = app_handle.emit(
-            "ai-complete",
-            json!({ "processed": processed, "total": total, "failed": failed, "cancelled": true }),
-        );
-        return;
-    }
-    if first_error.is_some() && processed == 0 {
-        if quiet {
-            let _ = app_handle.emit(
-                "ai-complete",
-                json!({ "processed": 0, "total": total, "failed": failed, "skipped": true }),
-            );
-        } else {
-            let _ = app_handle.emit(
-                "ai-error",
-                json!({ "message": first_error.unwrap(), "total": total }),
-            );
-        }
-        return;
-    }
-    let _ = app_handle.emit(
-        "ai-complete",
-        json!({ "processed": processed, "total": total, "failed": failed }),
-    );
-}
-
-#[tauri::command]
-async fn start_ai_analysis(
-    state: State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-    force: Option<bool>,
-) -> Result<(), String> {
-    let is_running = state.ai_is_running.clone();
-    if is_running
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err("AI analysis is already running".to_string());
-    }
-    let pool = state.db_pool.clone();
-    let is_cancelled = state.ai_is_cancelled.clone();
-    is_cancelled.store(false, Ordering::SeqCst);
-    if force.unwrap_or(false) {
-        let _ = sqlx::query("DELETE FROM photo_ai_results")
-            .execute(&state.db_pool)
-            .await;
-    }
-    tauri::async_runtime::spawn(async move {
-        run_ai_analysis(pool, app_handle, is_cancelled, false).await;
-        is_running.store(false, Ordering::SeqCst);
-    });
-    Ok(())
-}
-
-#[tauri::command]
-fn cancel_ai_analysis(state: State<'_, AppState>) {
-    state.ai_is_cancelled.store(true, Ordering::SeqCst);
-}
-
-#[tauri::command]
-async fn get_ai_analyses(state: State<'_, AppState>) -> Result<Vec<models::AiAnalysis>, String> {
-    let rows: Vec<models::AiAnalysisRow> = sqlx::query_as(
-        r#"SELECT
-            p.id, p.absolute_path, p.filename, p.extension, p.file_size, p.width, p.height,
-            p.created_at, p.modified_at, p.capture_time, p.camera_make, p.camera_model,
-            p.orientation, p.gps_available, p.sha256, p.perceptual_hash, p.thumbnail_path,
-            p.analysis_status, p.moment_id,
-            a.sharpness, a.exposure, a.contrast, a.highlight_clipping, a.shadow_clipping,
-            EXISTS(SELECT 1 FROM protected_photos k WHERE k.photo_id = p.id) AS is_kept,
-            r.analysis_json, r.model, r.analyzed_at
-        FROM photos p
-        LEFT JOIN analysis a ON p.id = a.photo_id
-        JOIN photo_ai_results r ON r.photo_id = p.id
-        WHERE NOT EXISTS (SELECT 1 FROM bin_entries b WHERE b.photo_id = p.id)
-        ORDER BY COALESCE(p.capture_time, p.created_at) DESC"#,
-    )
-    .fetch_all(&state.db_pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    Ok(rows
-        .into_iter()
-        .map(models::AiAnalysisRow::into_analysis)
-        .collect())
-}
-
-#[tauri::command]
-async fn clear_ai_analysis(state: State<'_, AppState>) -> Result<(), String> {
-    sqlx::query("DELETE FROM photo_ai_results")
-        .execute(&state.db_pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn analyze_moment(
-    model: String,
-    moment_id: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    // Core comparison is deterministic and completes without loading a vision LLM.
-    let _ = model; // Retained for compatibility with older frontend command payloads.
-    decisions::update(&state.db_pool, Some(&moment_id))
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
 async fn get_moment_face_summary(
     moment_id: String,
     state: State<'_, AppState>,
@@ -557,6 +282,131 @@ async fn get_photo_face_summaries(
         });
     }
     Ok(out)
+}
+
+#[derive(serde::Serialize)]
+struct PersonGroup {
+    key: String,
+    faces: Vec<PersonMatch>,
+}
+
+#[derive(serde::Serialize)]
+struct PeopleOverview {
+    groups: Vec<PersonGroup>,
+    photos_checked: i64,
+    faces_detected: i64,
+    failed: usize,
+}
+
+#[derive(serde::Serialize)]
+struct PersonMatch {
+    face_index: i64,
+    photo: models::Photo,
+}
+
+#[tauri::command]
+async fn get_person_groups(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<PeopleOverview, String> {
+    use tauri::Emitter;
+    let pending: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT p.id, p.absolute_path, p.sha256 FROM photos p
+         LEFT JOIN photo_face_analysis f ON f.photo_id = p.id
+         WHERE NOT EXISTS (SELECT 1 FROM bin_entries b WHERE b.photo_id = p.id)
+           AND p.sha256 IS NOT NULL
+           AND (f.photo_id IS NULL OR f.analyzer_version != ?)
+         ORDER BY p.absolute_path",
+    )
+    .bind(face_analysis::ANALYZER_VERSION)
+    .fetch_all(&state.db_pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut failed = 0;
+    if !pending.is_empty() {
+        let lock = foreground_lock(&state).await?;
+        for (index, (id, path, sha256)) in pending.iter().enumerate() {
+            let _ = app_handle.emit(
+                "people-progress",
+                json!({
+                    "stage": "detecting", "processed": index, "total": pending.len()
+                }),
+            );
+            if let Err(error) = scanner::analyze_faces_for_photo(
+                &state.db_pool,
+                id,
+                std::path::Path::new(path),
+                sha256,
+            )
+            .await
+            {
+                failed += 1;
+                tracing::warn!(photo_id = %id, stage = "face", error = %error, "Face reanalysis failed");
+            }
+        }
+        drop(lock);
+    }
+    let _ = app_handle.emit("people-progress", json!({ "stage": "grouping" }));
+    let groups = people::likely_same_people(&state.db_pool).await?;
+    let photos_checked: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM photo_face_analysis f JOIN photos p ON p.id = f.photo_id
+         WHERE f.analyzer_version = ? AND NOT EXISTS
+         (SELECT 1 FROM bin_entries b WHERE b.photo_id = p.id)",
+    )
+    .bind(face_analysis::ANALYZER_VERSION)
+    .fetch_one(&state.db_pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let faces_detected: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM photo_faces f JOIN photo_face_analysis a ON a.photo_id = f.photo_id
+         WHERE a.analyzer_version = ? AND NOT EXISTS
+         (SELECT 1 FROM bin_entries b WHERE b.photo_id = f.photo_id)",
+    )
+    .bind(face_analysis::ANALYZER_VERSION)
+    .fetch_one(&state.db_pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let photos = db::all_photos(&state.db_pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let by_id: std::collections::HashMap<_, _> =
+        photos.into_iter().map(|p| (p.id.clone(), p)).collect();
+    let groups = groups
+        .into_iter()
+        .filter_map(|group| {
+            let faces: Vec<_> = group
+                .faces
+                .iter()
+                .filter_map(|face| {
+                    by_id.get(&face.photo_id).cloned().map(|photo| PersonMatch {
+                        face_index: face.face_index,
+                        photo,
+                    })
+                })
+                .collect();
+            (faces.len() >= 2).then_some(PersonGroup {
+                key: group.key,
+                faces,
+            })
+        })
+        .collect();
+    Ok(PeopleOverview {
+        groups,
+        photos_checked,
+        faces_detected,
+        failed,
+    })
+}
+
+#[tauri::command]
+async fn get_face_preview(
+    photo_id: String,
+    face_index: i64,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let jpeg = people::face_preview(&state.db_pool, &photo_id, face_index).await?;
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    Ok(format!("data:image/jpeg;base64,{}", STANDARD.encode(jpeg)))
 }
 
 #[tauri::command]
@@ -854,9 +704,7 @@ pub fn run() {
     info!("PhotoMind starting");
 
     let result = tauri::Builder::default()
-        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let default_data_dir = app.path().app_data_dir()?;
             let qa_data_dir = std::env::var_os("PHOTOMIND_QA_DATA_DIR").map(PathBuf::from);
@@ -900,8 +748,6 @@ pub fn run() {
                 is_scanning: Arc::new(AtomicBool::new(false)),
                 is_paused: Arc::new(AtomicBool::new(false)),
                 is_cancelled: Arc::new(AtomicBool::new(false)),
-                ai_is_running: Arc::new(AtomicBool::new(false)),
-                ai_is_cancelled: Arc::new(AtomicBool::new(false)),
             });
 
             // Only explicit isolated QA runs auto-scan. Normal launches never
@@ -961,9 +807,6 @@ pub fn run() {
             get_logical_pairs,
             get_moment_groups,
             get_recommendations,
-            check_ollama,
-            test_analyze_photo,
-            analyze_moment,
             get_stats,
             move_to_trash,
             get_bin,
@@ -974,12 +817,10 @@ pub fn run() {
             get_photo_preview,
             log_user_decision,
             get_thumbnail_data_url,
-            start_ai_analysis,
-            cancel_ai_analysis,
-            get_ai_analyses,
-            clear_ai_analysis,
             get_moment_face_summary,
             get_photo_face_summaries,
+            get_person_groups,
+            get_face_preview,
             get_duplicate_moments
         ])
         .run(tauri::generate_context!());

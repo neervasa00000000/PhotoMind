@@ -4,12 +4,6 @@ on:
   push:
     tags:
       - 'v*.*.*'
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Tag to release (e.g., v0.1.0)'
-        required: true
-        type: string
 
 permissions:
   contents: write
@@ -75,7 +69,7 @@ jobs:
             build-essential \
             nasm
 
-      # Windows NASM (when enabled)
+      # Windows NASM
       - name: Setup NASM (Windows)
         if: matrix.platform == 'windows'
         uses: ilammy/setup-nasm@v1
@@ -125,15 +119,6 @@ jobs:
           path: src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
 
-      # Find and upload DEB (Linux - future)
-      # - name: Upload DEB artifact
-      #   if: matrix.platform == 'linux'
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: PhotoMind-${{ matrix.platform }}
-      #     path: src-tauri/target/release/bundle/deb/*.deb
-      #     if-no-files-found: error
-
   create-release:
     name: Create GitHub Release
     needs: build-release
@@ -153,78 +138,18 @@ jobs:
       - name: Get version from tag
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.tag }}"
-          else
-            TAG="${GITHUB_REF#refs/tags/}"
-          fi
+          TAG="${GITHUB_REF#refs/tags/}"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "version=${TAG#v}" >> $GITHUB_OUTPUT
 
       - name: Create release notes
-        id: notes
         run: |
-          cat > release_notes.md << 'EOF'
-          # PhotoMind ${{ steps.version.outputs.version }}
-
-          **Free, open-source, local-first photo culling and selection for photographers.**
-
-          ## What's New in v${{ steps.version.outputs.version }}
-
-          - macOS one-click installer that clears Gatekeeper quarantine
-          - Windows MSI installer
-          - Local-first photo culling (duplicates, similar shots, moments, quality)
-
-          ### Eye Analysis Status
-
-          Face detection works. Eye-state analysis is experimental and **does not affect ranking** while validation is ongoing.
-
-          ### Supported Formats
-
-          JPEG, PNG, RAW (CR2, CR3, NEF, ARW, RAF, ORF, RW2, PEF, SRW, DNG), HEIC/HEIF, AVIF
-
-          ## Installation
-
-          ### macOS
-
-          1. Download `PhotoMind_${{ steps.version.outputs.version }}_macOS.dmg`
-          2. Open the DMG
-          3. Double-click `Install PhotoMind.app` → click Done on the warning
-          4. System Settings → Privacy & Security → **Open Anyway**
-             Or double-click `install-via-terminal.command`
-
-          See [macOS Release Notes](https://github.com/neervasa00000000/PhotoMind/blob/main/docs/MACOS_RELEASE.md).
-
-          ### Windows
-
-          1. Download the `.msi` from this release
-          2. Run the installer
-          3. If SmartScreen appears: More info → Run anyway
-
-          ### Linux
-
-          Coming in a future release.
-
-          ## Requirements
-
-          - macOS 11+ or Windows 10+
-          - No Node.js, Rust, or Ollama required
-          - Works completely offline
-
-          ## Known Issues
-
-          - Not Apple-notarized / not Microsoft-signed (use the installers above)
-          - HEIC/HEIF pixel analysis incomplete
-          - Eye analysis experimental (disabled for ranking)
-
-          ## Privacy
-
-          PhotoMind processes photos locally. No data leaves your computer unless you explicitly enable optional Ollama integration.
-
-          ---
-
-          **Full Changelog:** https://github.com/neervasa00000000/PhotoMind/commits/${{ steps.version.outputs.tag }}
-          EOF
+          NOTES="RELEASE_NOTES_${GITHUB_REF_NAME}.md"
+          if [ -f "$NOTES" ]; then
+            cp "$NOTES" release_notes.md
+          else
+            printf '# PhotoMind %s\n\nLocal photo organization for macOS and Windows. Face detection and possible same-person grouping run on the device with a bundled model. No LLM or account is needed.\n' "${GITHUB_REF_NAME#v}" > release_notes.md
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -237,7 +162,6 @@ jobs:
           files: |
             artifacts/**/*.dmg
             artifacts/**/*.msi
-            artifacts/**/*.deb
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

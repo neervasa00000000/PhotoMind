@@ -26,27 +26,22 @@ impl FaceAnalyzer for LocalFaceAnalyzer {
     }
 }
 
-/// Run face analysis on a normalized RGB preview; failures never panic outward.
-pub fn analyze_rgb_preview(rgb: RgbImage) -> FaceAnalysis {
+/// Run face analysis on a normalized RGB preview. A failure must remain
+/// retryable instead of being persisted as a successful zero-face result.
+pub fn analyze_rgb_preview(rgb: RgbImage) -> Result<FaceAnalysis, FaceAnalysisError> {
     let image = yunet::AnalysisImage::from_rgb(rgb);
     let analyzer = LocalFaceAnalyzer;
     match catch_unwind(AssertUnwindSafe(|| analyzer.analyze(&image))) {
-        Ok(Ok(analysis)) => analysis,
+        Ok(Ok(analysis)) => Ok(analysis),
         Ok(Err(error)) => {
             tracing::warn!(stage = "face", error = %error, "Face analysis failed");
-            FaceAnalysis {
-                face_count: 0,
-                faces: Vec::new(),
-                analyzer_version: ANALYZER_VERSION.into(),
-            }
+            Err(error)
         }
         Err(_) => {
             tracing::warn!(stage = "face", "Face analysis panicked");
-            FaceAnalysis {
-                face_count: 0,
-                faces: Vec::new(),
-                analyzer_version: ANALYZER_VERSION.into(),
-            }
+            Err(FaceAnalysisError::InferenceFailed(
+                "Face analysis panicked".into(),
+            ))
         }
     }
 }

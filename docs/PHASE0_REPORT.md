@@ -1,3 +1,7 @@
+# Archived development report
+
+This report covers an earlier build. Ollama integration described below was removed in 0.1.1. See the README and `RELEASE_NOTES_v0.1.1.md` for the current release.
+
 # PhotoMind — Phase 0 stability report
 
 **Later preference change:** the user explicitly requested an empty active library after closing/reopening. Normal startup now resets scan results, active scan decisions, groups, folder history and unused previews, preserving originals and Bin recovery. Persistent-launch/resume observations below describe the earlier tested behavior and are historical. See [current launch behavior](CACHE_REFRESH.md).

@@ -1,7 +1,9 @@
 //! Fast, conservative recommendations from measured technical quality and local face signals.
 use crate::decision_reasons::{DecisionReason, ReasonBundle};
 use crate::decision_weights::{BEST_GAP_CONFIDENT, BEST_TIE_EPSILON, WEIGHTS};
-use crate::face_analysis::types::{DetectedFace, EyeState, GroupFaceMetrics};
+#[cfg(test)]
+use crate::face_analysis::types::EyeState;
+use crate::face_analysis::types::{DetectedFace, GroupFaceMetrics};
 use crate::models::{Photo, Recommendation};
 use sqlx::SqlitePool;
 use std::collections::BTreeMap;
@@ -31,7 +33,7 @@ fn people_score(metrics: &GroupFaceMetrics, faces: &[DetectedFace]) -> f64 {
         return 0.0;
     }
     let face_sharp = metrics.average_face_sharpness.unwrap_or(0.0) as f64;
-    
+
     // Eye-based scoring: gated by ENABLE_EYE_BASED_RANKING feature flag
     let eye_score = if ENABLE_EYE_BASED_RANKING {
         // Eye detection is validated and enabled for ranking
@@ -49,7 +51,7 @@ fn people_score(metrics: &GroupFaceMetrics, faces: &[DetectedFace]) -> f64 {
         // This allows eye analysis to run and be stored/displayed without affecting decisions
         0.5
     };
-    
+
     let expression = metrics
         .average_expression_score
         .map(f64::from)
@@ -92,7 +94,7 @@ fn mode_face_count(contexts: &[PhotoContext]) -> Option<usize> {
     counts.into_iter().max_by_key(|(_, n)| *n).map(|(c, _)| c)
 }
 
-pub fn recommend(contexts: &[PhotoContext]) -> Vec<Recommendation> {
+fn recommend(contexts: &[PhotoContext]) -> Vec<Recommendation> {
     let photos: Vec<&Photo> = contexts.iter().map(|c| &c.photo).collect();
     let eligible: Vec<&PhotoContext> = contexts
         .iter()
@@ -564,18 +566,26 @@ mod tests {
 mod pipeline_tests {
     use super::update;
     #[tokio::test]
-    async fn mixed_library_runs_without_ollama_and_reuses_analysis_after_restart() {
+    async fn mixed_library_runs_locally_and_reuses_analysis_after_restart() {
         let dir = std::env::temp_dir().join(format!("photomind-auto-{}", uuid::Uuid::new_v4()));
         let originals = dir.join("originals");
         let thumbs = dir.join("thumbs");
         std::fs::create_dir_all(&originals).unwrap();
         let img = image::RgbImage::from_fn(96, 64, |x, y| {
-            image::Rgb([(x * 7 % 256) as u8, (y * 11 % 256) as u8, ((x + y) * 13 % 256) as u8])
+            image::Rgb([
+                (x * 7 % 256) as u8,
+                (y * 11 % 256) as u8,
+                ((x + y) * 13 % 256) as u8,
+            ])
         });
         for ext in ["jpg", "png", "webp", "tiff"] {
             img.save(originals.join(format!("photo.{ext}"))).unwrap();
         }
-        std::fs::copy(originals.join("photo.jpg"), originals.join("far-away-9999.jpg")).unwrap();
+        std::fs::copy(
+            originals.join("photo.jpg"),
+            originals.join("far-away-9999.jpg"),
+        )
+        .unwrap();
         std::fs::write(originals.join("corrupt.jpg"), b"not a jpeg").unwrap();
         std::fs::write(originals.join("zero.jpg"), b"").unwrap();
         std::fs::write(originals.join("._photo.jpg"), [0, 5, 22, 7, 0, 2]).unwrap();
@@ -596,19 +606,18 @@ mod pipeline_tests {
         crate::scanner::generate_moments(&pool).await.unwrap();
         let start = std::time::Instant::now();
         update(&pool, None).await.unwrap();
-        eprintln!("Local decision pass for mixed library: {:?}", start.elapsed());
+        eprintln!(
+            "Local decision pass for mixed library: {:?}",
+            start.elapsed()
+        );
         let photos = crate::db::all_photos(&pool).await.unwrap();
         assert_eq!(photos.len(), 7);
-        let errors: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM photos WHERE analysis_status = 'error'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let errors: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM photos WHERE analysis_status = 'error'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(errors, 2);
-        let ai: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM photo_ai_results")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(ai, 0);
         let face_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM photo_face_analysis")
             .fetch_one(&pool)
             .await

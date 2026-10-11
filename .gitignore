@@ -45,6 +45,7 @@ eye-validation/**
 **/thumbnails/
 **/.ollama/
 **/target/
+release-artifacts/
 .qa/native-*/
 **/__pycache__/
 .qa/*.log

@@ -135,13 +135,6 @@ pub async fn init_db(app_data_dir: &Path) -> Result<SqlitePool, Box<dyn std::err
             photo_id TEXT PRIMARY KEY,
             FOREIGN KEY(photo_id) REFERENCES photos(id)
         );
-        CREATE TABLE IF NOT EXISTS photo_ai_results (
-            photo_id TEXT PRIMARY KEY,
-            model TEXT,
-            analysis_json TEXT NOT NULL,
-            analyzed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(photo_id) REFERENCES photos(id)
-        );
         CREATE INDEX IF NOT EXISTS idx_photos_sha256 ON photos(sha256);
         CREATE INDEX IF NOT EXISTS idx_photos_capture_time ON photos(capture_time);
         CREATE INDEX IF NOT EXISTS idx_photos_moment_id ON photos(moment_id);
@@ -175,6 +168,14 @@ pub async fn init_db(app_data_dir: &Path) -> Result<SqlitePool, Box<dyn std::err
             FOREIGN KEY(photo_id) REFERENCES photos(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_photo_faces_photo ON photo_faces(photo_id);
+        CREATE TABLE IF NOT EXISTS face_signatures (
+            photo_id TEXT NOT NULL,
+            face_index INTEGER NOT NULL,
+            version TEXT NOT NULL,
+            signature TEXT NOT NULL,
+            PRIMARY KEY(photo_id, face_index),
+            FOREIGN KEY(photo_id) REFERENCES photos(id) ON DELETE CASCADE
+        );
         "#,
     )
     .execute(&pool)
@@ -215,19 +216,21 @@ pub async fn init_db(app_data_dir: &Path) -> Result<SqlitePool, Box<dyn std::err
     Ok(pool)
 }
 
-async fn fix_best_of_group_column_type(pool: &SqlitePool) -> Result<(), Box<dyn std::error::Error>> {
+async fn fix_best_of_group_column_type(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Check if best_of_group exists and is TEXT instead of INTEGER
     let col_type: Option<String> = sqlx::query_scalar(
-        "SELECT type FROM pragma_table_info('recommendations') WHERE name = 'best_of_group'"
+        "SELECT type FROM pragma_table_info('recommendations') WHERE name = 'best_of_group'",
     )
     .fetch_optional(pool)
     .await?;
-    
+
     if col_type.as_deref() == Some("TEXT") {
         // Column exists but has wrong type; SQLite doesn't support ALTER COLUMN,
         // so we need to recreate the recommendations table
         let mut tx = pool.begin().await?;
-        
+
         // Create new table with correct schema
         sqlx::query(
             "CREATE TABLE recommendations_new (
@@ -240,11 +243,11 @@ async fn fix_best_of_group_column_type(pool: &SqlitePool) -> Result<(), Box<dyn 
                 reason_codes TEXT,
                 best_of_group INTEGER,
                 FOREIGN KEY(photo_id) REFERENCES photos(id)
-            )"
+            )",
         )
         .execute(&mut *tx)
         .await?;
-        
+
         // Copy data, converting TEXT to INTEGER for best_of_group
         sqlx::query(
             "INSERT INTO recommendations_new 
@@ -254,17 +257,19 @@ async fn fix_best_of_group_column_type(pool: &SqlitePool) -> Result<(), Box<dyn 
                          THEN CAST(best_of_group AS INTEGER) 
                          ELSE NULL 
                     END
-             FROM recommendations"
+             FROM recommendations",
         )
         .execute(&mut *tx)
         .await?;
-        
+
         // Drop old table and rename new one
-        sqlx::query("DROP TABLE recommendations").execute(&mut *tx).await?;
+        sqlx::query("DROP TABLE recommendations")
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("ALTER TABLE recommendations_new RENAME TO recommendations")
             .execute(&mut *tx)
             .await?;
-        
+
         tx.commit().await?;
     }
     Ok(())
@@ -281,7 +286,11 @@ async fn ensure_recommendation_column(
     .fetch_one(pool)
     .await?;
     if exists == 0 {
-        let col_type = if column == "best_of_group" { "INTEGER" } else { "TEXT" };
+        let col_type = if column == "best_of_group" {
+            "INTEGER"
+        } else {
+            "TEXT"
+        };
         let sql = format!("ALTER TABLE recommendations ADD COLUMN {column} {col_type}");
         sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .execute(pool)
@@ -567,7 +576,6 @@ pub async fn reconcile_active_index(pool: &SqlitePool) -> Result<(), Box<dyn std
         for sql in [
             "DELETE FROM user_decisions WHERE photo_id = ?",
             "DELETE FROM analysis WHERE photo_id = ?",
-            "DELETE FROM photo_ai_results WHERE photo_id = ?",
             "DELETE FROM protected_photos WHERE photo_id = ?",
             "DELETE FROM photos WHERE id = ?",
         ] {
@@ -599,11 +607,6 @@ pub async fn reset_scan_library(
     sqlx::query("DELETE FROM analysis WHERE photo_id NOT IN (SELECT photo_id FROM bin_entries)")
         .execute(&mut *tx)
         .await?;
-    sqlx::query(
-        "DELETE FROM photo_ai_results WHERE photo_id NOT IN (SELECT photo_id FROM bin_entries)",
-    )
-    .execute(&mut *tx)
-    .await?;
     sqlx::query(
         "DELETE FROM protected_photos WHERE photo_id NOT IN (SELECT photo_id FROM bin_entries)",
     )
@@ -1157,89 +1160,6 @@ mod tests {
 pub async fn all_photos(pool: &SqlitePool) -> Result<Vec<crate::models::Photo>, sqlx::Error> {
     sqlx::QueryBuilder::<sqlx::Sqlite>::new(PHOTO_SELECT).push(" WHERE NOT EXISTS (SELECT 1 FROM bin_entries b WHERE b.photo_id = p.id) ORDER BY p.absolute_path, p.id").build_query_as()
         .fetch_all(pool).await
-}
-
-/// Reuse AI only for identical bytes with the same model, never visual similarity.
-pub async fn reusable_ai_result(
-    pool: &SqlitePool,
-    hash: Option<&str>,
-    model: &str,
-) -> Result<Option<String>, sqlx::Error> {
-    let Some(hash) = hash.filter(|h| !h.is_empty()) else {
-        return Ok(None);
-    };
-    sqlx::query_scalar("SELECT r.analysis_json FROM photo_ai_results r JOIN photos p ON p.id = r.photo_id WHERE p.sha256 = ? AND r.model = ? ORDER BY r.analyzed_at DESC LIMIT 1").bind(hash).bind(model).fetch_optional(pool).await
-}
-
-pub async fn save_ai_result(
-    pool: &SqlitePool,
-    id: &str,
-    hash: Option<&str>,
-    model: &str,
-    result: &str,
-) -> Result<bool, sqlx::Error> {
-    let saved = sqlx::query("INSERT OR REPLACE INTO photo_ai_results (photo_id, model, analysis_json, analyzed_at) SELECT id, ?, ?, CURRENT_TIMESTAMP FROM photos WHERE id = ? AND sha256 IS ? AND NOT EXISTS (SELECT 1 FROM bin_entries b WHERE b.photo_id = photos.id)").bind(model).bind(result).bind(id).bind(hash).execute(pool).await?;
-    Ok(saved.rows_affected() > 0)
-}
-
-#[cfg(test)]
-mod ai_cache_tests {
-    use super::*;
-    #[tokio::test]
-    async fn ai_cache_requires_identical_contents_and_model_and_rejects_stale_writes() {
-        let dir = std::env::temp_dir().join(format!("photomind-ai-cache-{}", uuid::Uuid::new_v4()));
-        let pool = init_db(&dir).await.unwrap();
-        for (id, hash) in [("a", "same"), ("b", "same"), ("c", "different")] {
-            sqlx::query("INSERT INTO photos (id, sha256) VALUES (?, ?)")
-                .bind(id)
-                .bind(hash)
-                .execute(&pool)
-                .await
-                .unwrap();
-        }
-        assert!(save_ai_result(&pool, "a", Some("same"), "vision", "{}")
-            .await
-            .unwrap());
-        assert_eq!(
-            reusable_ai_result(&pool, Some("same"), "vision")
-                .await
-                .unwrap(),
-            Some("{}".into())
-        );
-        assert!(reusable_ai_result(&pool, Some("different"), "vision")
-            .await
-            .unwrap()
-            .is_none());
-        assert!(reusable_ai_result(&pool, Some("same"), "another-model")
-            .await
-            .unwrap()
-            .is_none());
-        assert!(reusable_ai_result(&pool, None, "vision")
-            .await
-            .unwrap()
-            .is_none());
-        assert!(save_ai_result(&pool, "b", Some("same"), "vision", "{}")
-            .await
-            .unwrap());
-        sqlx::query("UPDATE photos SET sha256 = 'edited' WHERE id = 'c'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        assert!(
-            !save_ai_result(&pool, "c", Some("different"), "vision", "{}")
-                .await
-                .unwrap()
-        );
-        sqlx::query("INSERT INTO bin_entries (photo_id, original_path) VALUES ('b', '/b.jpg')")
-            .execute(&pool)
-            .await
-            .unwrap();
-        assert!(!save_ai_result(&pool, "b", Some("same"), "vision", "{}")
-            .await
-            .unwrap());
-        pool.close().await;
-        std::fs::remove_dir_all(dir).unwrap();
-    }
 }
 
 /// Phase 0 test: after a fresh `init_db`, the foreign key and WAL

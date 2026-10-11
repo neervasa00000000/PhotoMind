@@ -1,5 +1,7 @@
 # PhotoMind v0.1.0 Release Notes
 
+These notes are historical. Ollama integration was removed in 0.1.1; see `RELEASE_NOTES_v0.1.1.md` for current downloads and behavior.
+
 **Release Date:** September 19, 2026
 
 ## Overview

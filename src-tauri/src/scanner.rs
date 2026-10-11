@@ -715,11 +715,6 @@ pub async fn refresh_photo(
     .ok_or_else(|| format!("Cannot read metadata for {absolute_path}"))?;
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     if changed {
-        sqlx::query("DELETE FROM photo_ai_results WHERE photo_id = ?")
-            .bind(&row.id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
         sqlx::query("DELETE FROM photo_faces WHERE photo_id = ?")
             .bind(&row.id)
             .execute(&mut *tx)
@@ -775,7 +770,7 @@ pub async fn refresh_photo(
     Ok(())
 }
 
-async fn analyze_faces_for_photo(
+pub(crate) async fn analyze_faces_for_photo(
     pool: &sqlx::SqlitePool,
     photo_id: &str,
     path: &Path,
@@ -795,11 +790,13 @@ async fn analyze_faces_for_photo(
         return Ok(());
     }
     let path = path.to_path_buf();
-    let analysis = tokio::task::spawn_blocking(move || {
+    let (analysis, rgb) = tokio::task::spawn_blocking(move || {
         let rgb = ingest::load_normalized(&path, 512)
             .map_err(|e| e.to_string())?
             .into_rgb8();
-        Ok::<_, String>(crate::face_analysis::analyze_rgb_preview(rgb))
+        let analysis = crate::face_analysis::analyze_rgb_preview(rgb.clone())
+            .map_err(|error| error.to_string())?;
+        Ok::<_, String>((analysis, rgb))
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -807,6 +804,10 @@ async fn analyze_faces_for_photo(
     crate::face_db::save_face_analysis(pool, photo_id, &analysis)
         .await
         .map_err(|e| e.to_string())?;
+    if let Err(error) = crate::people::cache_signatures(pool, photo_id, &rgb, &analysis.faces).await
+    {
+        tracing::warn!(photo_id = %photo_id, stage = "face", error = %error, "Could not cache face descriptors");
+    }
     tracing::info!(photo_id = %photo_id, stage = "face", status = "completed", face_count = analysis.face_count);
     Ok(())
 }
@@ -1440,12 +1441,13 @@ mod tests {
                         .fetch_one(&pool)
                         .await
                         .unwrap();
-                let reason: Option<String> =
-                    sqlx::query_scalar("SELECT reason FROM scan_errors WHERE session_id = ? LIMIT 1")
-                        .bind(session_id)
-                        .fetch_optional(&pool)
-                        .await
-                        .unwrap();
+                let reason: Option<String> = sqlx::query_scalar(
+                    "SELECT reason FROM scan_errors WHERE session_id = ? LIMIT 1",
+                )
+                .bind(session_id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
                 assert!(
                     reason.is_some_and(|r| r.contains("not supported")),
                     "unsupported HEIC must be recorded with its reason"

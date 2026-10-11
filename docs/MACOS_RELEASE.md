@@ -120,7 +120,7 @@ The bundled app is completely self-contained and does not require:
 - Rust
 - npm
 - Separate model downloads
-- Ollama (unless user wants optional AI features)
+- Ollama or another LLM
 
 ## Security Considerations
 

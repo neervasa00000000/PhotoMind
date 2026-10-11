@@ -6,45 +6,7 @@ import { VirtuosoGrid } from "react-virtuoso";
 import PhotoViewer, { clearPreviewCache } from "./PhotoViewer";
 import { planCleanup } from "./cleanup";
 import type { Photo, BinPhoto, FileActionReport, ViewerState, DuplicateGroup } from "./types";
-import { FolderOpen, Layers, Image as ImageIcon, Settings, Cpu, LayoutDashboard, Trash2 } from "lucide-react";
-
-interface OllamaModel {
-  name: string;
-  is_vision: boolean;
-}
-
-interface BlurAnalysis {
-  blurred: boolean;
-  level: number;
-  cause?: string | null;
-}
-
-interface FaceDetail {
-  eye_state: "OPEN" | "PARTIAL" | "CLOSED" | "UNCLEAR";
-  looking_at_camera: boolean;
-  emotion?: string | null;
-  quality: number;
-}
-
-interface AnalysisResult {
-  scene_type: string;
-  people: any;
-  subject: any;
-  composition: any;
-  aesthetic_score: number;
-  blur?: BlurAnalysis | null;
-  faces?: FaceDetail[] | null;
-  suggestions?: string[] | null;
-  problems: string[];
-  summary: string;
-}
-
-interface AiAnalysis {
-  photo: Photo;
-  model: string;
-  analysis_json: string;
-  analyzed_at: string | null;
-}
+import { FolderOpen, Layers, Image as ImageIcon, Cpu, LayoutDashboard, Trash2, Users } from "lucide-react";
 
 interface MomentGroup {
   id: string;
@@ -86,6 +48,18 @@ interface MomentGroupWithPhotos {
   moment: MomentGroup;
   photos: Photo[];
   recommendations: Recommendation[];
+}
+
+interface PersonGroup {
+  key: string;
+  faces: { face_index: number; photo: Photo }[];
+}
+
+interface PeopleOverview {
+  groups: PersonGroup[];
+  photos_checked: number;
+  faces_detected: number;
+  failed: number;
 }
 
 interface DashboardStats {
@@ -154,8 +128,32 @@ function PhotoThumb({
   return <img src={src} alt={filename} className={className} />;
 }
 
+function FaceThumb({ photo, faceIndex }: { photo: Photo; faceIndex: number }) {
+  const key = `face:${photo.id}:${faceIndex}:${photo.sha256 ?? ''}`;
+  const [src, setSrc] = useState<string | null>(thumbnailCache.get(key) ?? null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const cached = thumbnailCache.get(key);
+    setSrc(cached ?? null);
+    setFailed(false);
+    if (cached) return;
+    invoke<string>('get_face_preview', { photoId: photo.id, faceIndex })
+      .then(url => {
+        if (cancelled) return;
+        if (thumbnailCache.size >= 500) thumbnailCache.delete(thumbnailCache.keys().next().value!);
+        thumbnailCache.set(key, url);
+        setSrc(url);
+      }).catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, [key, photo.id, faceIndex]);
+  if (failed) return <PhotoThumb photoId={photo.id} version={photo.sha256} filename={photo.filename} className="w-full h-full object-cover" />;
+  if (!src) return <div className="w-full h-full bg-gray-200 animate-pulse" />;
+  return <img src={src} alt={`Detected face in ${photo.filename}`} className="w-full h-full object-cover" />;
+}
+
 function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'library' | 'duplicates' | 'moments' | 'settings' | 'bin'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'library' | 'duplicates' | 'moments' | 'people' | 'bin'>('dashboard');
   const [photos, setPhotos] = useState<Photo[]>([]);
   const photoOffset = useRef(0);
   const photoLoading = useRef(false);
@@ -174,18 +172,13 @@ function App() {
   const [scanPaused, setScanPaused] = useState(false);
   const [scanProgress, setScanProgress] = useState<{processed: number, total: number, current_file: string} | null>(null);
   
-  const [ollamaModels, setOllamaModels] = useState<OllamaModel[] | null>(null);
-  const [ollamaError, setOllamaError] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string | null>(null);
-  const [localProcessingOnly, setLocalProcessingOnly] = useState(true);
-  
-  const [testAnalysis, setTestAnalysis] = useState<AnalysisResult | null>(null);
-  const [testAnalysisPhoto, setTestAnalysisPhoto] = useState<Photo | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [aiAnalyses, setAiAnalyses] = useState<Map<string, AnalysisResult>>(new Map());
   const [faceSummaries, setFaceSummaries] = useState<Map<string, PhotoFaceSummary>>(new Map());
-  const [aiRunning, setAiRunning] = useState(false);
-  const [aiProgress, setAiProgress] = useState<{processed: number; total: number; model: string; current_file: string} | null>(null);
+  const [personGroups, setPersonGroups] = useState<PersonGroup[]>([]);
+  const [peopleOverview, setPeopleOverview] = useState<PeopleOverview | null>(null);
+  const [peopleProgress, setPeopleProgress] = useState<{ stage: string; processed?: number; total?: number } | null>(null);
+  const [peopleLoading, setPeopleLoading] = useState(true);
+  const [peopleError, setPeopleError] = useState<string | null>(null);
+  const [peopleVersion, setPeopleVersion] = useState(0);
 
   useEffect(() => {
     let lastPhotoRefresh = 0;
@@ -236,28 +229,6 @@ function App() {
       await refreshData();
     });
 
-    const unlistenAiProgress = listen<{ processed: number; total: number; model: string; current_file: string }>('ai-progress', (event) => {
-      setAiProgress(event.payload);
-      setAiRunning(true);
-    });
-
-    const unlistenAiComplete = listen<{ processed: number; total: number; failed: number; cancelled?: boolean }>('ai-complete', async (event) => {
-      setAiProgress(null);
-      setAiRunning(false);
-      await refreshData();
-      const p = event.payload;
-      if (p.total > 0 && !p.cancelled) {
-        setNotice({ text: `AI analysis complete: ${p.processed} photo(s) analyzed${p.failed ? `, ${p.failed} failed` : ""}.` });
-      }
-    });
-
-    const unlistenAiError = listen<{ message: string }>('ai-error', async (event) => {
-      setAiProgress(null);
-      setAiRunning(false);
-      setNotice({ text: event.payload.message, error: true });
-      await refreshData();
-    });
-
     // Load data on initial startup
     refreshData();
 
@@ -266,9 +237,6 @@ function App() {
       unlistenComplete.then(f => f());
       unlistenLocalResults.then(f => f());
       unlistenError.then(f => f());
-      unlistenAiProgress.then(f => f());
-      unlistenAiComplete.then(f => f());
-      unlistenAiError.then(f => f());
     };
   }, []);
 
@@ -291,7 +259,7 @@ function App() {
         setBinPhotos(current);
         setViewer(previous => {
           if (!previous?.inBin) return previous;
-          const remaining = previous.photos.filter(p => current.some(entry => entry.photo.id === p.id));
+          const remaining = previous.photos.filter(p => current.some(entry => entry.available && entry.photo.id === p.id));
           if (!remaining.length) return null;
           return { ...previous, photos: remaining, selectedId: remaining.some(p => p.id === previous.selectedId) ? previous.selectedId : remaining[0].id };
         });
@@ -305,6 +273,24 @@ function App() {
     return () => { cancelled = true; window.removeEventListener("focus", syncBin); document.removeEventListener("visibilitychange", syncBin); if (timer) window.clearInterval(timer); };
   }, [activeTab]);
 
+  useEffect(() => {
+    if (activeTab !== 'people') return;
+    let cancelled = false;
+    setPeopleLoading(true);
+    setPeopleError(null);
+    setPeopleProgress(null);
+    const unlisten = listen<{ stage: string; processed?: number; total?: number }>('people-progress', event => {
+      if (!cancelled) setPeopleProgress(event.payload);
+    });
+    invoke<PeopleOverview>('get_person_groups')
+      .then(overview => {
+        if (!cancelled) { setPersonGroups(overview.groups); setPeopleOverview(overview); }
+      })
+      .catch(error => { if (!cancelled) setPeopleError(String(error)); })
+      .finally(() => { if (!cancelled) { setPeopleLoading(false); setPeopleProgress(null); } });
+    return () => { cancelled = true; unlisten.then(stop => stop()); };
+  }, [activeTab, peopleVersion]);
+
   const loadMorePhotos = async () => {
     if (photoLoading.current || !hasMorePhotos.current) return;
     photoLoading.current = true;
@@ -314,7 +300,10 @@ function App() {
       if (generation !== photoGeneration.current) return;
       photoOffset.current += page.length;
       hasMorePhotos.current = page.length === 200;
-      setPhotos(previous => [...previous, ...page]);
+      setPhotos(previous => {
+        const seen = new Set(previous.map(photo => photo.id));
+        return [...previous, ...page.filter(photo => !seen.has(photo.id))];
+      });
     } catch (err) {
       console.error("Failed to load library page", err);
       alert("Could not load more photos: " + String(err));
@@ -350,70 +339,15 @@ function App() {
       const bin = await invoke<BinPhoto[]>("get_bin");
       if (generation !== photoGeneration.current) return;
       setBinPhotos(bin);
-      const fetchedAi = await invoke<AiAnalysis[]>("get_ai_analyses");
-      if (generation !== photoGeneration.current) return;
-      const aiMap = new Map<string, AnalysisResult>();
-      for (const entry of fetchedAi) {
-        try { aiMap.set(entry.photo.id, JSON.parse(entry.analysis_json)); } catch (_) { /* ignore malformed */ }
-      }
-      setAiAnalyses(aiMap);
       const faceRows = await invoke<PhotoFaceSummary[]>("get_photo_face_summaries");
       if (generation !== photoGeneration.current) return;
       setFaceSummaries(new Map(faceRows.map(row => [row.photo_id, row])));
+      setPeopleVersion(version => version + 1);
     } catch (err) {
       console.error("Failed to load data", err);
       alert("Could not refresh library: " + String(err));
     } finally {
       if (generation === photoGeneration.current) photoLoading.current = false;
-    }
-  };
-
-  const checkOllamaStatus = async () => {
-    try {
-      setOllamaError(null);
-      const models = await invoke<OllamaModel[]>("check_ollama");
-      setOllamaModels(models);
-      if (models.length > 0) {
-        const visionModel = models.find(m => m.is_vision);
-        if (visionModel) {
-          setSelectedModel(visionModel.name);
-        } else {
-          setSelectedModel(null);
-        }
-      }
-    } catch (err: any) {
-      setOllamaError(err.toString());
-      setOllamaModels([]);
-    }
-  };
-
-  const testAnalyze = async (photo: Photo) => {
-    if (!selectedModel) return;
-    setIsAnalyzing(true);
-    setTestAnalysis(null);
-    setTestAnalysisPhoto(photo);
-    try {
-      const result = await invoke<AnalysisResult>("test_analyze_photo", {
-        model: selectedModel,
-        photoPath: photo.absolute_path
-      });
-      setTestAnalysis(result);
-      setAiAnalyses(previous => new Map(previous).set(photo.id, result));
-    } catch (err: any) {
-      console.error(err);
-      alert("Analysis failed: " + err.toString());
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const openAiDetails = (photo: Photo) => {
-    const cached = aiAnalyses.get(photo.id);
-    if (cached) {
-      setTestAnalysis(cached);
-      setTestAnalysisPhoto(photo);
-    } else {
-      testAnalyze(photo);
     }
   };
 
@@ -537,6 +471,10 @@ function App() {
     setScanPaused(false);
   };
 
+  // Recovery records on disconnected volumes are kept for later, but only
+  // files currently present in Trash belong in the visible Bin.
+  const availableBinPhotos = binPhotos.filter(item => item.available);
+
   return (
     <div className="flex flex-col h-screen bg-gray-50 text-gray-900 font-sans">
       <header className="flex-shrink-0 bg-white shadow-sm px-6 py-4 flex items-center justify-between z-10 border-b border-gray-100">
@@ -546,7 +484,7 @@ function App() {
             <p className="text-xs text-blue-600 font-medium tracking-wide uppercase mt-1">100% LOCAL PRIVACY</p>
           </div>
           
-          {(photos.length > 0 || binPhotos.length > 0 || scanning) && (
+          {(photos.length > 0 || availableBinPhotos.length > 0 || scanning) && (
             <div className="flex flex-wrap bg-gray-100 p-1 rounded-lg">
               <button 
                 onClick={() => setActiveTab('dashboard')}
@@ -582,13 +520,15 @@ function App() {
                   </span>
                 )}
               </button>
-              <button onClick={() => setActiveTab('bin')} aria-current={activeTab === 'bin' ? 'page' : undefined} className={`px-3 py-2 rounded-md text-sm font-medium flex items-center gap-2 whitespace-nowrap ${activeTab === 'bin' ? 'bg-white shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}><Trash2 size={16} /> Bin {binPhotos.length > 0 && <span>{binPhotos.length}</span>}</button>
-              <button 
-                onClick={() => { setActiveTab('settings'); checkOllamaStatus(); }}
-                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-2 ${activeTab === 'settings' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-900'}`}
+              <button
+                onClick={() => { setPeopleLoading(true); setActiveTab('people'); }}
+                aria-current={activeTab === 'people' ? 'page' : undefined}
+                className={`px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-2 ${activeTab === 'people' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-900'}`}
               >
-                <Settings size={16} /> Advanced AI
+                <Users size={16} /> People
               </button>
+              <button onClick={() => setActiveTab('bin')} aria-current={activeTab === 'bin' ? 'page' : undefined} className={`px-3 py-2 rounded-md text-sm font-medium flex items-center gap-2 whitespace-nowrap ${activeTab === 'bin' ? 'bg-white shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}><Trash2 size={16} /> Bin {availableBinPhotos.length > 0 && <span>{availableBinPhotos.length}</span>}</button>
+
             </div>
           )}
         </div>
@@ -611,17 +551,6 @@ function App() {
           <button onClick={() => { setActiveTab('bin'); setViewer(null); }} className="font-semibold underline">View Bin</button>
           <button aria-label="Dismiss message" onClick={() => setNotice(null)} className="px-2">Dismiss</button>
         </div></div>}
-      {aiRunning && aiProgress && aiProgress.total > 0 && (
-        <div className="px-6 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-3" role="status">
-          <Cpu size={14} className="text-blue-600 shrink-0" />
-          <span className="text-xs text-blue-800 font-medium whitespace-nowrap">AI analyzing {aiProgress.model || "photos"}…</span>
-          <div className="flex-1 h-1.5 bg-blue-100 rounded-full overflow-hidden max-w-md">
-            <div className="h-1.5 bg-blue-600 rounded-full transition-all duration-300" style={{ width: `${(aiProgress.processed / aiProgress.total) * 100}%` }}></div>
-          </div>
-          <span className="text-xs text-blue-700 font-medium whitespace-nowrap">{aiProgress.processed}/{aiProgress.total}</span>
-          <button onClick={() => invoke("cancel_ai_analysis")} className="ui-button ui-button--secondary text-xs">Cancel</button>
-        </div>
-      )}
       {scanning && photos.length > 0 && <div role="status" className="px-6 py-3 bg-blue-50 border-b border-blue-100 flex gap-3 items-center">
         <span className="text-sm text-blue-900 flex-1">{scanPaused ? "Paused" : "Analyzing locally"}: {scanProgress?.processed ?? 0} / {scanProgress?.total ?? 0} · {scanProgress?.current_file}</span>
         <button onClick={scanPaused ? resumeScan : pauseScan} className="ui-button ui-button--secondary text-xs">{scanPaused ? "Resume" : "Pause"}</button>
@@ -636,7 +565,7 @@ function App() {
               </div>
               <h3 className="text-xl font-medium text-gray-900 mb-2">{scanPaused ? "Scan Paused" : "Analyzing Photos"}</h3>
               <p className="text-gray-500 mb-6 text-sm">
-                Creating previews, measuring sharpness and exposure, finding duplicates, and recommending keepers automatically. No Ollama required.
+                Creating previews, measuring sharpness and exposure, finding duplicates, and recommending keepers locally.
               </p>
               
               {scanProgress && (
@@ -673,7 +602,7 @@ function App() {
               </div>
             </div>
           </div>
-        ) : photos.length === 0 && activeTab !== 'bin' && activeTab !== 'settings' ? (
+        ) : photos.length === 0 && activeTab !== 'bin' ? (
           <div className="h-full flex flex-col items-center justify-center text-center p-8 bg-white">
             <div className="w-24 h-24 bg-blue-50 rounded-3xl flex items-center justify-center mb-8 rotate-3 shadow-inner">
               <ImageIcon size={40} className="text-blue-600 -rotate-3" />
@@ -860,6 +789,39 @@ function App() {
               </div>
             )}
           </div>
+        ) : activeTab === 'people' ? (
+          <div className="h-full p-6 overflow-y-auto">
+            <div className="mb-6">
+              <h2 className="page-title">People</h2>
+              <p className="text-sm text-gray-600 mt-1">Likely matches from detected faces, compared on this computer. Review each group; similar looking people can be matched incorrectly.</p>
+            </div>
+            {peopleLoading ? <p role="status" className="text-sm text-gray-600">{peopleProgress?.stage === 'detecting'
+              ? `Detecting faces locally… ${peopleProgress.processed ?? 0} of ${peopleProgress.total ?? 0} photos checked`
+              : 'Comparing faces locally…'}</p>
+              : peopleError ? <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">Could not group faces: {peopleError}</div>
+              : personGroups.length === 0 ? <div className="rounded-2xl border-2 border-dashed border-gray-200 p-8 text-center text-gray-600">
+                  {peopleOverview?.faces_detected === 0
+                    ? `No faces detected in ${peopleOverview.photos_checked} checked photos.`
+                    : `${peopleOverview?.faces_detected ?? 0} faces detected, with no strong same-person matches yet.`}
+                  {peopleOverview && peopleOverview.failed > 0 && <p className="mt-2 text-red-700">Could not check {peopleOverview.failed} photos. Try scanning the folder again.</p>}
+                </div>
+              : <div className="space-y-6 pb-8">
+                <p className="text-sm text-gray-600">{peopleOverview?.faces_detected ?? 0} faces detected across {peopleOverview?.photos_checked ?? 0} checked photos.</p>
+                {personGroups.map((group, index) => <section key={group.key} className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                    <div><h3 className="font-semibold text-gray-900">Possible person {index + 1}</h3><p className="text-sm text-gray-600">{group.faces.length} photos · check faces before treating these as the same person</p></div>
+                    <button className="ui-button ui-button--secondary" onClick={() => openViewer(group.faces.map(face => face.photo), group.faces[0].photo)}>Review photos</button>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-7 gap-3">
+                    {group.faces.slice(0, 7).map(face => <button key={face.photo.id} onClick={() => openViewer(group.faces.map(item => item.photo), face.photo)} aria-label={`Review face in ${face.photo.filename}`} className="min-w-0 text-left rounded-xl border border-gray-200 overflow-hidden hover:shadow-md transition-shadow">
+                      <div className="aspect-square bg-gray-100"><FaceThumb photo={face.photo} faceIndex={face.face_index} /></div>
+                      <span className="block text-xs font-medium p-2 truncate" title={face.photo.filename}>{face.photo.filename}</span>
+                    </button>)}
+                  </div>
+                  {group.faces.length > 7 && <p className="text-xs text-gray-600 mt-3">{group.faces.length - 7} more photos in this group. Select Review photos to see them all.</p>}
+                </section>)}
+              </div>}
+          </div>
         ) : activeTab === 'moments' ? (
           <div className="h-full p-6 flex flex-col overflow-y-auto">
             <div className="mb-6 flex items-end justify-between">
@@ -872,7 +834,7 @@ function App() {
 
             <div role="status" className="mb-6 bg-white border border-gray-200 rounded-2xl p-4 shadow-sm">
               <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2"><Cpu size={16} className="text-blue-600" /> Automatic local analysis</h3>
-              <p className="text-xs text-gray-600 mt-1">Recommendations use measured sharpness, clipping and duplicate similarity. Inspect faces and expressions when comparing. Advanced AI is optional.</p>
+              <p className="text-xs text-gray-600 mt-1">Recommendations use measured sharpness, clipping and duplicate similarity. Inspect faces and expressions when comparing.</p>
             </div>
 
             {moments.length === 0 ? (
@@ -902,7 +864,6 @@ function App() {
                     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
                       {group.photos.map((photo) => {
                         const rec = group.recommendations.find(r => r.photo_id === photo.id);
-                        const ai = aiAnalyses.get(photo.id);
                         const face = faceSummaries.get(photo.id);
                         return (
                         <div key={photo.id} className="flex flex-col gap-2">
@@ -967,13 +928,7 @@ function App() {
                               ) : (
                                 <p className="text-white text-[10px] leading-snug text-center line-clamp-4 max-h-full overflow-hidden">Technical analysis pending.</p>
                               )}
-                              <button
-                                onClick={() => openAiDetails(photo)}
-                                disabled={isAnalyzing || !selectedModel}
-                                className="shrink-0 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white text-[10px] font-semibold px-2 py-1 rounded shadow-sm"
-                              >
-                                {isAnalyzing && testAnalysisPhoto?.id === photo.id ? "Analyzing…" : aiAnalyses.has(photo.id) ? "AI details" : "Analyze with AI"}
-                              </button>
+
                             </div>
                           </div>
 <div className="text-xs">
@@ -986,21 +941,6 @@ function App() {
                 )}
                 {face.average_smile != null && (
                   <span className="bg-purple-50 text-purple-700 rounded px-1.5 py-0.5 text-[10px] font-semibold">Expression analyzed</span>
-                )}
-              </div>
-            )}
-            {ai && (
-              <div className="flex flex-wrap gap-1 mt-1.5">
-                {ai.blur?.blurred ? (
-                  <span className="bg-red-50 text-red-700 rounded px-1.5 py-0.5 text-[10px] font-semibold" title={ai.blur.cause ?? "Blurred photo"}>Blur</span>
-                ) : (
-                  <span className="bg-green-50 text-green-700 rounded px-1.5 py-0.5 text-[10px] font-semibold">Sharp</span>
-                )}
-                {(ai.people?.count ?? 0) > 0 && (
-                  <span className="bg-blue-50 text-blue-700 rounded px-1.5 py-0.5 text-[10px] font-semibold">{ai.people.count} face{ai.people.count > 1 ? "s" : ""}</span>
-                )}
-                {(ai.people?.count ?? 0) > 0 && !ai.people.eyes_open && (
-                  <span className="bg-amber-50 text-amber-700 rounded px-1.5 py-0.5 text-[10px] font-semibold">Eyes closed</span>
                 )}
               </div>
             )}
@@ -1024,185 +964,17 @@ function App() {
               </div>
             )}
 
-            {testAnalysis && (
-              <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-[0_-10px_40px_rgba(0,0,0,0.1)] p-6 z-50 max-h-[55vh] overflow-y-auto">
-                <div className="flex flex-wrap justify-between items-center gap-3 mb-4">
-                  <h3 className="font-bold text-lg text-gray-900 flex items-center gap-2 min-w-0">
-                    <Cpu className="text-blue-600 shrink-0" />
-                    <span className="truncate">AI Details — {testAnalysisPhoto?.filename ?? "Photo"}</span>
-                  </h3>
-                  <button onClick={() => { setTestAnalysis(null); setTestAnalysisPhoto(null); }} className="text-gray-400 hover:text-gray-900 font-bold px-3 py-1 bg-gray-100 rounded shrink-0">Close</button>
-                </div>
-
-                {testAnalysisPhoto && (
-                  <div className="flex flex-wrap gap-2 mb-4">
-                    <button disabled={fileBusy || testAnalysisPhoto.is_kept} onClick={() => { keepPhoto(testAnalysisPhoto, [testAnalysisPhoto]); setTestAnalysisPhoto({ ...testAnalysisPhoto, is_kept: true }); }} className="rounded-lg bg-green-50 hover:bg-green-100 text-green-800 disabled:opacity-40 px-3 py-1.5 text-xs font-semibold">
-                      {testAnalysisPhoto.is_kept ? "Marked Keep" : "Mark as Keep"}
-                    </button>
-                    <button disabled={fileBusy || testAnalysisPhoto.is_kept} title={testAnalysisPhoto.is_kept ? "Choose another keeper before moving to Bin" : "Recoverable from Bin"} onClick={() => trashPhotos([testAnalysisPhoto.id])} className="rounded-lg bg-red-50 hover:bg-red-100 text-red-700 disabled:opacity-40 px-3 py-1.5 text-xs font-semibold">
-                      Move to Bin
-                    </button>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  <div>
-                    <h4 className="font-semibold text-gray-700 text-sm mb-2 uppercase tracking-wide">Overview</h4>
-                    <p className="text-sm"><span className="font-medium">Scene:</span> {testAnalysis.scene_type}</p>
-                    <p className="text-sm"><span className="font-medium">Aesthetic:</span> {testAnalysis.aesthetic_score}/10</p>
-                    {testAnalysis.blur && (
-                      <p className="text-sm mt-1">
-                        <span className="font-medium">Blur:</span>{" "}
-                        {testAnalysis.blur.blurred ? (
-                          <span className="text-red-600 font-semibold">Blurred ({(testAnalysis.blur.level * 100).toFixed(0)}%){testAnalysis.blur.cause ? ` · ${testAnalysis.blur.cause}` : ""}</span>
-                        ) : (
-                          <span className="text-green-600 font-semibold">Sharp</span>
-                        )}
-                      </p>
-                    )}
-                    <p className="text-xs mt-2 text-gray-600 italic line-clamp-3" title={testAnalysis.summary}>"{testAnalysis.summary}"</p>
-                  </div>
-
-                  <div>
-                    <h4 className="font-semibold text-gray-700 text-sm mb-2 uppercase tracking-wide">People & Faces</h4>
-                    <p className="text-sm"><span className="font-medium">Faces:</span> {testAnalysis.people.count} · <span className="font-medium">Eyes open:</span> {testAnalysis.people.eyes_open ? "Yes" : "No"} · <span className="font-medium">Looking at camera:</span> {testAnalysis.people.looking_at_camera ? "Yes" : "No"}</p>
-                    <p className="text-sm"><span className="font-medium">Expression:</span> {(testAnalysis.people.expression_quality * 100).toFixed(0)}% · <span className="font-medium">Face quality:</span> {(testAnalysis.people.face_quality * 100).toFixed(0)}%</p>
-                    {testAnalysis.faces && testAnalysis.faces.length > 0 && (
-                      <ul className="mt-2 space-y-1">
-                        {testAnalysis.faces.map((face, i) => (
-                          <li key={i} className="flex items-center gap-2 text-xs">
-                            <span className={`px-1.5 py-0.5 rounded font-semibold ${face.eye_state === "CLOSED" ? "bg-red-100 text-red-700" : face.eye_state === "OPEN" ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800"}`}>{face.eye_state}</span>
-                            <span>Face {i + 1}: {face.emotion ? face.emotion : "no expression"} · Q{(face.quality * 100).toFixed(0)}%</span>
-                            <span className="text-gray-500">{face.looking_at_camera ? "camera" : "not camera"}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <p className="text-sm mt-2"><span className="font-medium">Subject clear:</span> {testAnalysis.subject.clear ? "Yes" : "No"} · <span className="font-medium">Quality:</span> {testAnalysis.subject.quality}/10</p>
-                  </div>
-
-                  <div>
-                    <h4 className="font-semibold text-gray-700 text-sm mb-2 uppercase tracking-wide">Composition & Problems</h4>
-                    <p className="text-sm"><span className="font-medium">Score:</span> {testAnalysis.composition.score}/10{testAnalysis.composition.issues?.length ? ` · ${testAnalysis.composition.issues.join(" · ")}` : ""}</p>
-                    {testAnalysis.problems.length > 0 ? (
-                      <ul className="list-disc pl-4 mt-1 text-xs text-red-600 space-y-0.5 line-clamp-4">
-                        {testAnalysis.problems.map((p, i) => <li key={i} className="truncate" title={p}>{p}</li>)}
-                      </ul>
-                    ) : (
-                      <p className="text-sm text-green-600 mt-1">No major problems detected.</p>
-                    )}
-                  </div>
-                </div>
-
-                {testAnalysis.suggestions && testAnalysis.suggestions.length > 0 && (
-                  <div className="mt-5 border-t border-gray-100 pt-4">
-                    <h4 className="font-semibold text-gray-700 text-sm mb-2 uppercase tracking-wide">Suggestions</h4>
-                    <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
-                      {testAnalysis.suggestions.map((s, i) => (
-                        <li key={i} className="text-xs text-gray-700 flex items-start gap-1.5">
-                          <span className="text-blue-600 font-bold mt-px">▸</span>
-                          <span>{s}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         ) : activeTab === 'bin' ? (
           <div className="h-full p-6 overflow-y-auto">
-            <div className="flex flex-wrap justify-between items-center gap-4 mb-6"><div><h2 id="bin-title" tabIndex={-1} className="page-title">Bin</h2><p className="text-sm text-gray-600 mt-1">Review removed photos large, recover them to their original folders, or delete permanently.</p><p className="text-xs text-gray-600 mt-1">On macOS, these files are in system Trash. Emptying Trash in Finder also removes them permanently.</p></div><button disabled={fileBusy || binPhotos.length === 0} onClick={() => recoverPhotos(binPhotos.map(item => item.photo.id))} className="ui-button ui-button--primary">Recover all</button></div>
-            {binPhotos.length === 0 ? <div className="border-2 border-dashed rounded-2xl p-16 text-center"><Trash2 className="mx-auto text-gray-500 mb-4" size={32} /><h3 className="font-semibold">Bin is empty</h3><p className="text-sm text-gray-600 mt-2">Photos moved to Bin will stay here for review and recovery.</p></div> :
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-5">{binPhotos.map(item => <article key={item.photo.id} className="bg-white border rounded-xl p-3 flex flex-col gap-3">
-                <button onClick={() => openViewer(binPhotos.map(b => b.photo), item.photo, true)} aria-label={`View ${item.photo.filename} in Bin large`} className="aspect-square rounded-lg overflow-hidden bg-gray-100"><PhotoThumb photoId={item.photo.id} version={item.photo.sha256} filename={item.photo.filename} className="w-full h-full object-cover" /></button>
-                <div><p className="text-sm font-semibold truncate" title={item.photo.filename}>{item.photo.filename}</p><p className="text-xs text-gray-600 truncate mt-1" title={item.original_path}>From: {item.original_path}</p><p className="text-xs text-gray-600 mt-1">{(item.photo.file_size / 1048576).toFixed(2)} MB</p>{!item.available && <p className="text-xs text-red-700 mt-2">File unavailable. It may have been recovered or Trash was emptied in Finder.</p>}</div>
+            <div className="flex flex-wrap justify-between items-center gap-4 mb-6"><div><h2 id="bin-title" tabIndex={-1} className="page-title">Bin</h2><p className="text-sm text-gray-600 mt-1">Review removed photos large, recover them to their original folders, or delete permanently.</p><p className="text-xs text-gray-600 mt-1">On macOS, these files are in system Trash. Emptying Trash in Finder also removes them permanently.</p></div><button disabled={fileBusy || availableBinPhotos.length === 0} onClick={() => recoverPhotos(availableBinPhotos.map(item => item.photo.id))} className="ui-button ui-button--primary">Recover all</button></div>
+            {availableBinPhotos.length === 0 ? <div className="border-2 border-dashed rounded-2xl p-16 text-center"><Trash2 className="mx-auto text-gray-500 mb-4" size={32} /><h3 className="font-semibold">Bin is empty</h3><p className="text-sm text-gray-600 mt-2">{binPhotos.length > 0 ? 'Photos in Trash on a disconnected drive will appear when you reconnect it.' : 'Photos moved to Bin will stay here for review and recovery.'}</p></div> :
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-5">{availableBinPhotos.map(item => <article key={item.photo.id} className="bg-white border rounded-xl p-3 flex flex-col gap-3">
+                <button onClick={() => openViewer(availableBinPhotos.map(b => b.photo), item.photo, true)} aria-label={`View ${item.photo.filename} in Bin large`} className="aspect-square rounded-lg overflow-hidden bg-gray-100"><PhotoThumb photoId={item.photo.id} version={item.photo.sha256} filename={item.photo.filename} className="w-full h-full object-cover" /></button>
+                <div><p className="text-sm font-semibold truncate" title={item.photo.filename}>{item.photo.filename}</p><p className="text-xs text-gray-600 truncate mt-1" title={item.original_path}>From: {item.original_path}</p><p className="text-xs text-gray-600 mt-1">{(item.photo.file_size / 1048576).toFixed(2)} MB</p></div>
                 <button disabled={fileBusy} onClick={() => recoverPhotos([item.photo.id])} className="rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-800 disabled:opacity-40 px-3 py-2 text-sm font-semibold">Recover</button>
-                <button disabled={fileBusy || !item.available} onClick={() => purgePhotos([item.photo.id])} className="ui-button ui-button--danger text-xs">Delete permanently…</button>
+                <button disabled={fileBusy} onClick={() => purgePhotos([item.photo.id])} className="ui-button ui-button--danger text-xs">Delete permanently…</button>
               </article>)}</div>}
-          </div>
-        ) : activeTab === 'settings' ? (
-          <div className="h-full p-8 flex flex-col max-w-3xl mx-auto overflow-y-auto">
-            <h2 className="page-title mb-6">Advanced AI & Privacy</h2>
-            <p className="text-sm text-gray-600 mb-6">Optional photo descriptions and experimental face/expression estimates. Automatic scanning and recommendations work without this service.</p>
-            
-            <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm mb-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-medium flex items-center gap-2">
-                  <Cpu size={20} className={ollamaError ? "text-red-500" : "text-green-500"} />
-                  Local AI Status
-                </h3>
-                <button 
-                  onClick={checkOllamaStatus}
-                  className="text-sm bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-lg font-medium transition-colors"
-                >
-                  Refresh
-                </button>
-              </div>
-              
-              {ollamaError ? (
-                <div className="bg-red-50 text-red-700 p-4 rounded-xl text-sm mb-4">
-                  <p className="font-semibold mb-1">Ollama is not running</p>
-                  <p>{ollamaError}</p>
-                  <p className="mt-2 text-red-600/80">Make sure you have Ollama installed and running locally on port 11434. PhotoMind will NEVER use cloud AI APIs to protect your privacy.</p>
-                </div>
-              ) : (
-                <div className="bg-green-50 text-green-800 p-4 rounded-xl text-sm mb-6 flex items-center gap-2 font-medium">
-                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                  Connected to local Ollama runtime
-                </div>
-              )}
-
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Selected Vision Model</label>
-                  <select 
-                    value={selectedModel || ""}
-                    onChange={(e) => setSelectedModel(e.target.value)}
-                    disabled={!ollamaModels || ollamaModels.length === 0}
-                    className="w-full bg-gray-50 border border-gray-200 text-gray-900 rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2.5"
-                  >
-                    {!ollamaModels || ollamaModels.length === 0 ? (
-                      <option>No models installed...</option>
-                    ) : (
-                      ollamaModels.map(m => (
-                        <option key={m.name} value={m.name}>
-                          {m.name} {m.is_vision ? "(Vision Supported)" : "(No Vision Detected)"}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                  {ollamaModels && ollamaModels.length > 0 && selectedModel && !ollamaModels.find(m => m.name === selectedModel)?.is_vision && (
-                    <p className="text-amber-600 text-xs mt-2 font-medium">
-                      Warning: The selected model may not support image analysis. 
-                      Try installing a model like `llama3.2-vision` or `moondream`.
-                    </p>
-                  )}
-                </div>
-              </div>
-            </div>
-            
-            <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
-              <h3 className="text-lg font-medium mb-4 text-gray-900">Privacy Constraints</h3>
-              
-              <label className="flex items-start gap-3 cursor-pointer">
-                <div className="flex items-center h-5 mt-0.5">
-                  <input 
-                    type="checkbox" 
-                    checked={localProcessingOnly}
-                    onChange={(e) => setLocalProcessingOnly(e.target.checked)}
-                    className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500" 
-                  />
-                </div>
-                <div className="text-sm">
-                  <span className="font-medium text-gray-900 block mb-1">Strict Local Processing Only</span>
-                  <p className="text-gray-500">
-                    When enabled, the application will forcefully reject any attempt to route requests to remote APIs or remote instances of Ollama.
-                    All processing and inference occurs locally on your machine.
-                  </p>
-                </div>
-              </label>
-            </div>
           </div>
         ) : null}
       </main>

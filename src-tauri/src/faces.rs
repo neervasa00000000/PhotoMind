@@ -1,4 +1,4 @@
-//! Group face intelligence from persisted local face analysis (not Ollama).
+//! Group face intelligence from persisted local face analysis.
 
 use crate::face_analysis::types::{EyeState, GroupFaceMetrics};
 use crate::face_db;

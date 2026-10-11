@@ -179,8 +179,9 @@ never offered up as "delete one of these two".
 
 - Tools: `rustc 1.95.0`, `npm` — full **pure-Rust** dependency tree, no `cmake`
   or Python anywhere in the build.
-- Fully offline at runtime; the single dependency is the local library and
-  (optionally) a local Ollama endpoint. No telemetry, no network calls.
+- Fully offline at runtime. Face detection uses the bundled YuNet model;
+  possible same-person grouping uses local face descriptors. No telemetry or
+  network calls are required.
 - Tested: **macOS (Apple Silicon)** — 63 unit/integration tests, 0 failures,
   2 manual-perf `#[ignore]`d. Both ignored checks were also run in `--release`
   this session (Trash roundtrip; 1.50 ms SHA-256 + 111 ms image processing),

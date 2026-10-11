@@ -4,7 +4,7 @@ use super::types::{
     FaceAnalysisError, ANALYZER_VERSION,
 };
 use image::{GrayImage, RgbImage};
-use ort::session::Session;
+use ort::session::{Session, SessionOutputs};
 use ort::value::Tensor;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -137,21 +137,101 @@ fn detections_for_image(image: &AnalysisImage) -> Result<Vec<RawDetection>, Face
             .run(ort::inputs![input])
             .map_err(|e| FaceAnalysisError::InferenceFailed(e.to_string()))?;
 
-        let output = outputs
-            .values()
-            .next()
-            .ok_or_else(|| FaceAnalysisError::InferenceFailed("Empty YuNet output".into()))?;
-
-        let (shape, data) = output
-            .try_extract_tensor::<f32>()
-            .map_err(|e| FaceAnalysisError::InferenceFailed(e.to_string()))?;
-
-        let detections = parse_detections(shape, data, scale_x, scale_y);
+        let detections = decode_yunet_outputs(&outputs, scale_x, scale_y)?;
         Ok(nms(detections, NMS_THRESHOLD)
             .into_iter()
             .filter(|d| d.score >= SCORE_THRESHOLD)
             .collect())
     })
+}
+
+// YuNet 2023mar exposes twelve heads (class, objectness, box and landmarks at
+// strides 8, 16 and 32), not a final Nx15 detection tensor. OpenCV's
+// FaceDetectorYN postprocessing provides the decoding equations used here.
+fn decode_yunet_outputs(
+    outputs: &SessionOutputs<'_>,
+    scale_x: f32,
+    scale_y: f32,
+) -> Result<Vec<RawDetection>, FaceAnalysisError> {
+    let mut detections = Vec::new();
+    for stride in [8_usize, 16, 32] {
+        let read = |prefix: &str, width: usize| -> Result<&[f32], FaceAnalysisError> {
+            let name = format!("{prefix}_{stride}");
+            let output = outputs.get(&name).ok_or_else(|| {
+                FaceAnalysisError::InferenceFailed(format!("Missing YuNet output {name}"))
+            })?;
+            let (_, data) = output
+                .try_extract_tensor::<f32>()
+                .map_err(|e| FaceAnalysisError::InferenceFailed(e.to_string()))?;
+            let cells = (INPUT_SIZE as usize / stride).pow(2);
+            if data.len() != cells * width {
+                return Err(FaceAnalysisError::InferenceFailed(format!(
+                    "Unexpected YuNet output size for {name}: {}",
+                    data.len()
+                )));
+            }
+            Ok(data)
+        };
+        let cls = read("cls", 1)?;
+        let obj = read("obj", 1)?;
+        let bbox = read("bbox", 4)?;
+        let kps = read("kps", 10)?;
+        detections.extend(decode_head(cls, obj, bbox, kps, stride, scale_x, scale_y));
+    }
+    Ok(detections)
+}
+
+fn decode_head(
+    cls: &[f32],
+    obj: &[f32],
+    bbox: &[f32],
+    kps: &[f32],
+    stride: usize,
+    scale_x: f32,
+    scale_y: f32,
+) -> Vec<RawDetection> {
+    let mut detections = Vec::new();
+    let cols = INPUT_SIZE as usize / stride;
+    for index in 0..cls.len() {
+        let score = (cls[index].clamp(0.0, 1.0) * obj[index].clamp(0.0, 1.0)).sqrt();
+        if !score.is_finite() || score < SCORE_THRESHOLD {
+            continue;
+        }
+        let col = (index % cols) as f32;
+        let row = (index / cols) as f32;
+        let stride = stride as f32;
+        let cx = (col + bbox[index * 4]) * stride;
+        let cy = (row + bbox[index * 4 + 1]) * stride;
+        let width = bbox[index * 4 + 2].exp() * stride;
+        let height = bbox[index * 4 + 3].exp() * stride;
+        if ![cx, cy, width, height]
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            continue;
+        }
+        let point = |n: usize| -> (f32, f32) {
+            (
+                (kps[index * 10 + n * 2] + col) * stride * scale_x,
+                (kps[index * 10 + n * 2 + 1] + row) * stride * scale_y,
+            )
+        };
+        detections.push(RawDetection {
+            bbox: BoundingBox {
+                x: (cx - width / 2.0) * scale_x,
+                y: (cy - height / 2.0) * scale_y,
+                width: width * scale_x,
+                height: height * scale_y,
+            },
+            score,
+            right_eye: point(0),
+            left_eye: point(1),
+            nose: point(2),
+            mouth_right: point(3),
+            mouth_left: point(4),
+        });
+    }
+    detections
 }
 
 struct RawDetection {
@@ -166,86 +246,15 @@ struct RawDetection {
     mouth_left: (f32, f32),
 }
 
-/// OpenCV YuNet 2023mar 15-column row:
-/// `[x, y, w, h, x_re, y_re, x_le, y_le, x_nt, y_nt, x_rcm, y_rcm, x_lcm, y_lcm, score]`
-/// `re`/`le` are the subject's right/left eyes, not the camera's left/right.
-fn parse_detections(shape: &[i64], data: &[f32], scale_x: f32, scale_y: f32) -> Vec<RawDetection> {
-    let mut out = Vec::new();
-    if shape.len() == 3 && shape[0] == 1 {
-        let cols = shape[2] as usize;
-        let rows = shape[1] as usize;
-        if cols >= 15 {
-            for r in 0..rows {
-                let base = r * cols;
-                let score = data.get(base + 14).copied().unwrap_or(0.0);
-                if score <= 0.01 {
-                    continue;
-                }
-                let x = data[base] * scale_x;
-                let y = data[base + 1] * scale_y;
-                let w = data[base + 2] * scale_x;
-                let h = data[base + 3] * scale_y;
-                out.push(RawDetection {
-                    bbox: BoundingBox {
-                        x,
-                        y,
-                        width: w,
-                        height: h,
-                    },
-                    score,
-                    right_eye: (data[base + 4] * scale_x, data[base + 5] * scale_y),
-                    left_eye: (data[base + 6] * scale_x, data[base + 7] * scale_y),
-                    nose: (data[base + 8] * scale_x, data[base + 9] * scale_y),
-                    mouth_right: (data[base + 10] * scale_x, data[base + 11] * scale_y),
-                    mouth_left: (data[base + 12] * scale_x, data[base + 13] * scale_y),
-                });
-            }
-            return out;
-        }
-    }
-    if shape.len() == 2 {
-        let cols = shape[1] as usize;
-        let rows = shape[0] as usize;
-        if cols >= 15 {
-            for r in 0..rows {
-                let base = r * cols;
-                let score = data.get(base + 14).copied().unwrap_or(0.0);
-                if score <= 0.01 {
-                    continue;
-                }
-                let x = data[base] * scale_x;
-                let y = data[base + 1] * scale_y;
-                let w = data[base + 2] * scale_x;
-                let h = data[base + 3] * scale_y;
-                out.push(RawDetection {
-                    bbox: BoundingBox {
-                        x,
-                        y,
-                        width: w,
-                        height: h,
-                    },
-                    score,
-                    right_eye: (data[base + 4] * scale_x, data[base + 5] * scale_y),
-                    left_eye: (data[base + 6] * scale_x, data[base + 7] * scale_y),
-                    nose: (data[base + 8] * scale_x, data[base + 9] * scale_y),
-                    mouth_right: (data[base + 10] * scale_x, data[base + 11] * scale_y),
-                    mouth_left: (data[base + 12] * scale_x, data[base + 13] * scale_y),
-                });
-            }
-        }
-    }
-    out
-}
-
 fn build_input_tensor(rgb: &RgbImage, width: u32, height: u32) -> Tensor<f32> {
     let resized =
         image::imageops::resize(rgb, width, height, image::imageops::FilterType::Triangle);
     let mut data = vec![0.0f32; (3 * width * height) as usize];
     let plane = (width * height) as usize;
     for (i, pixel) in resized.pixels().enumerate() {
-        data[i] = pixel[2] as f32 / 255.0;
-        data[plane + i] = pixel[1] as f32 / 255.0;
-        data[2 * plane + i] = pixel[0] as f32 / 255.0;
+        data[i] = pixel[2] as f32;
+        data[plane + i] = pixel[1] as f32;
+        data[2 * plane + i] = pixel[0] as f32;
     }
     Tensor::from_array((
         [1_i64, 3, height as i64, width as i64],
@@ -416,6 +425,37 @@ mod tests {
         assert_eq!(result.face_count, 0);
     }
 
+    #[tokio::test]
+    #[ignore = "requires an explicitly selected local photo library"]
+    async fn manual_real_library_face_smoke() {
+        use sqlx::sqlite::SqliteConnectOptions;
+        let path = std::env::var("PHOTOMIND_TEST_DB").expect("set PHOTOMIND_TEST_DB");
+        let pool = sqlx::SqlitePool::connect_with(
+            SqliteConnectOptions::new().filename(path).read_only(true),
+        )
+        .await
+        .unwrap();
+        let paths: Vec<String> = sqlx::query_scalar(
+            "SELECT p.absolute_path FROM photos p WHERE NOT EXISTS
+             (SELECT 1 FROM bin_entries b WHERE b.photo_id = p.id) LIMIT 50",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let mut found = 0;
+        let mut checked = 0;
+        for path in paths {
+            if let Ok(image) = crate::ingest::load_normalized(std::path::Path::new(&path), 512) {
+                checked += 1;
+                found += analyze_yunet(&AnalysisImage::from_rgb(image.into_rgb8()))
+                    .unwrap()
+                    .face_count;
+            }
+        }
+        println!("Checked {checked} local photos; detected {found} faces");
+        assert!(found > 0, "No faces found in the selected library");
+    }
+
     #[test]
     fn baseline_v1_thresholds_and_normalization_unchanged() {
         assert_eq!(EYE_OPEN_THRESHOLD, 0.52);
@@ -428,28 +468,23 @@ mod tests {
 
     #[test]
     fn yunet_landmarks_are_subject_anatomical_left_and_right() {
-        // Frontal face facing the camera: subject's right eye is on the image-left
-        // (smaller x). YuNet stores that at columns 4–5; subject's left at 6–7.
-        let mut row = vec![0.0f32; 15];
-        row[0] = 100.0;
-        row[1] = 40.0;
-        row[2] = 80.0;
-        row[3] = 90.0;
-        row[4] = 118.0; // subject's RIGHT eye x (image-left)
-        row[5] = 70.0;
-        row[6] = 162.0; // subject's LEFT eye x (image-right)
-        row[7] = 71.0;
-        row[8] = 140.0;
-        row[9] = 95.0;
-        row[10] = 125.0;
-        row[11] = 115.0;
-        row[12] = 155.0;
-        row[13] = 115.0;
-        row[14] = 0.92;
-        let dets = parse_detections(&[1, 1, 15], &row, 1.0, 1.0);
+        let cells = (INPUT_SIZE / 8).pow(2) as usize;
+        let mut cls = vec![0.0; cells];
+        let mut obj = vec![0.0; cells];
+        let mut bbox = vec![0.0; cells * 4];
+        let mut kps = vec![0.0; cells * 10];
+        let index = 10 * (INPUT_SIZE as usize / 8) + 12;
+        cls[index] = 0.9;
+        obj[index] = 0.9;
+        bbox[index * 4 + 2] = (10.0_f32).ln();
+        bbox[index * 4 + 3] = (11.0_f32).ln();
+        kps[index * 10] = -2.0;
+        kps[index * 10 + 2] = 2.0;
+        let dets = decode_head(&cls, &obj, &bbox, &kps, 8, 1.0, 1.0);
         assert_eq!(dets.len(), 1);
-        assert_eq!(dets[0].right_eye, (118.0, 70.0));
-        assert_eq!(dets[0].left_eye, (162.0, 71.0));
+        assert_eq!(dets[0].right_eye, (80.0, 80.0));
+        assert_eq!(dets[0].left_eye, (112.0, 80.0));
+        assert!((dets[0].bbox.width - 80.0).abs() < 0.001);
         assert!(
             dets[0].right_eye.0 < dets[0].left_eye.0,
             "frontal subject-right eye must sit at smaller image-x than subject-left"
@@ -460,7 +495,7 @@ mod tests {
             subject_left_eye: dets[0].left_eye,
             subject_right_eye: dets[0].right_eye,
         };
-        assert_eq!(geom.subject_left_eye, (162.0, 71.0));
-        assert_eq!(geom.subject_right_eye, (118.0, 70.0));
+        assert_eq!(geom.subject_left_eye, (112.0, 80.0));
+        assert_eq!(geom.subject_right_eye, (80.0, 80.0));
     }
 }

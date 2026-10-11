@@ -1,3 +1,7 @@
+# Archived development snapshot
+
+This document describes an earlier build. Ollama integration described below was removed in 0.1.1. See the README and `RELEASE_NOTES_v0.1.1.md` for current behavior.
+
 # PhotoMind current state — Phase 0 inspection
 
 ## Application architecture

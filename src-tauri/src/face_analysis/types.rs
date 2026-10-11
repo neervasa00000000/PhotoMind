@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const ANALYZER_VERSION: &str = "face-v1-yunet";
+pub const ANALYZER_VERSION: &str = "face-v2-yunet-decoded";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]

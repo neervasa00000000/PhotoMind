@@ -33,6 +33,10 @@ pub async fn copy_face_analysis_by_sha256(
         return Ok(false);
     };
     let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM face_signatures WHERE photo_id = ?")
+        .bind(target_photo_id)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM photo_faces WHERE photo_id = ?")
         .bind(target_photo_id)
         .execute(&mut *tx)
@@ -66,6 +70,14 @@ pub async fn copy_face_analysis_by_sha256(
     .bind(&source_id)
     .execute(&mut *tx)
     .await?;
+    sqlx::query(
+        "INSERT INTO face_signatures (photo_id, face_index, version, signature)
+         SELECT ?, face_index, version, signature FROM face_signatures WHERE photo_id = ?",
+    )
+    .bind(target_photo_id)
+    .bind(&source_id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("UPDATE analysis SET face_count = (SELECT face_count FROM photo_face_analysis WHERE photo_id = ?) WHERE photo_id = ?")
         .bind(target_photo_id)
         .bind(target_photo_id)
@@ -81,6 +93,10 @@ pub async fn save_face_analysis(
     analysis: &FaceAnalysis,
 ) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM face_signatures WHERE photo_id = ?")
+        .bind(photo_id)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM photo_faces WHERE photo_id = ?")
         .bind(photo_id)
         .execute(&mut *tx)

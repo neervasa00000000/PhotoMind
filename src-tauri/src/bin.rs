@@ -77,6 +77,46 @@ fn definitely_missing(path: &Path) -> bool {
         && path.parent().is_some_and(Path::is_dir)
 }
 
+// Forget only PhotoMind's recovery record and generated preview. This never
+// removes the original or a file in system Trash.
+async fn remove_record(pool: &SqlitePool, thumb_dir: &Path, id: &str) -> Result<(), String> {
+    let thumbnail: Option<String> =
+        sqlx::query_scalar("SELECT thumbnail_path FROM photos WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    for query in [
+        "DELETE FROM recommendations WHERE photo_id = ?",
+        "DELETE FROM user_decisions WHERE photo_id = ?",
+        "DELETE FROM analysis WHERE photo_id = ?",
+        "DELETE FROM protected_photos WHERE photo_id = ?",
+        "DELETE FROM bin_entries WHERE photo_id = ?",
+        "DELETE FROM photos WHERE id = ?",
+    ] {
+        sqlx::query(query)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    if let Some(thumbnail) = thumbnail {
+        let path = Path::new(&thumbnail);
+        let references: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM photos WHERE thumbnail_path = ?")
+                .bind(&thumbnail)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        if references == 0 && path.parent() == Some(thumb_dir) && path.is_file() {
+            std::fs::remove_file(path).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn reconcile(pool: &SqlitePool, thumb_dir: &Path) -> Result<(), String> {
     let thumb_dir = std::fs::canonicalize(thumb_dir).unwrap_or_else(|_| thumb_dir.to_path_buf());
     let entries: Vec<(String, String, Option<String>)> =
@@ -93,41 +133,7 @@ pub async fn reconcile(pool: &SqlitePool, thumb_dir: &Path) -> Result<(), String
             // Finder recovery is reconciled only if the original bytes still match.
             let _ = recover_one(pool, &id).await;
         } else if definitely_missing(Path::new(&original)) {
-            let thumbnail: Option<String> =
-                sqlx::query_scalar("SELECT thumbnail_path FROM photos WHERE id = ?")
-                    .bind(&id)
-                    .fetch_one(pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-            for query in [
-                "DELETE FROM recommendations WHERE photo_id = ?",
-                "DELETE FROM user_decisions WHERE photo_id = ?",
-                "DELETE FROM analysis WHERE photo_id = ?",
-                "DELETE FROM photo_ai_results WHERE photo_id = ?",
-                "DELETE FROM protected_photos WHERE photo_id = ?",
-                "DELETE FROM bin_entries WHERE photo_id = ?",
-                "DELETE FROM photos WHERE id = ?",
-            ] {
-                sqlx::query(query)
-                    .bind(&id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
-            tx.commit().await.map_err(|e| e.to_string())?;
-            if let Some(thumbnail) = thumbnail {
-                let path = Path::new(&thumbnail);
-                let references: i64 =
-                    sqlx::query_scalar("SELECT COUNT(*) FROM photos WHERE thumbnail_path = ?")
-                        .bind(&thumbnail)
-                        .fetch_one(pool)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                if references == 0 && path.parent() == Some(thumb_dir.as_path()) && path.is_file() {
-                    std::fs::remove_file(path).map_err(|e| e.to_string())?;
-                }
-            }
+            remove_record(pool, &thumb_dir, &id).await?;
         }
     }
     Ok(())
@@ -323,7 +329,6 @@ pub async fn purge_one(pool: &SqlitePool, id: &str) -> Result<(), String> {
         "DELETE FROM recommendations WHERE photo_id = ?",
         "DELETE FROM user_decisions WHERE photo_id = ?",
         "DELETE FROM analysis WHERE photo_id = ?",
-        "DELETE FROM photo_ai_results WHERE photo_id = ?",
         "DELETE FROM protected_photos WHERE photo_id = ?",
         "DELETE FROM bin_entries WHERE photo_id = ?",
     ] {
@@ -370,7 +375,6 @@ mod tests {
             .await
             .unwrap();
         let id = db::all_photos(&pool).await.unwrap()[0].id.clone();
-        sqlx::query("INSERT INTO photo_ai_results (photo_id, model, analysis_json) VALUES (?, 'fixture', '{}')").bind(&id).execute(&pool).await.unwrap();
         (dir, pool, original, id)
     }
     fn test_mover(target: PathBuf) -> impl FnOnce(&Path) -> Result<PathBuf, String> + Send {
