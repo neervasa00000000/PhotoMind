@@ -791,7 +791,8 @@ pub(crate) async fn analyze_faces_for_photo(
     }
     let path = path.to_path_buf();
     let (analysis, rgb) = tokio::task::spawn_blocking(move || {
-        let rgb = ingest::load_normalized(&path, 512)
+        // Preserve enough pixels for reliable face descriptors in group photos.
+        let rgb = ingest::load_normalized(&path, 1536)
             .map_err(|e| e.to_string())?
             .into_rgb8();
         let analysis = crate::face_analysis::analyze_rgb_preview(rgb.clone())
@@ -818,60 +819,40 @@ pub fn duplicate_groups(
 ) -> Vec<crate::models::DuplicateGroup> {
     // A RAW+JPEG logical pair is ONE photo; neither side may ever be offered up
     // as a duplicate candidate of the other (or of anything else) in its stead.
-    let photos: Vec<&Photo> = photos
+    let candidates: Vec<Photo> = photos
         .iter()
         .filter(|p| !paired_ids.contains(&p.id))
+        .cloned()
         .collect();
-    let mut exact = std::collections::BTreeMap::<String, Vec<Photo>>::new();
-    let mut candidates = Vec::new();
-    for photo in &photos {
-        if let Some(hash) = photo.sha256.as_ref().filter(|h| !h.is_empty()) {
-            exact
-                .entry(hash.clone())
-                .or_default()
-                .push((*photo).clone());
-        } else if photo.perceptual_hash.is_some() {
-            candidates.push((*photo).clone());
-        }
-    }
     let mut groups = Vec::new();
-    let mut copies = std::collections::HashMap::new();
-    for (hash, mut group) in exact {
-        group.sort_by(|a, b| {
+    for mut cluster in cluster_similar_photos(&candidates) {
+        cluster.sort_by(|a, b| {
             b.is_kept
                 .cmp(&a.is_kept)
-                .then(a.absolute_path.cmp(&b.absolute_path).then(a.id.cmp(&b.id)))
+                .then(a.absolute_path.cmp(&b.absolute_path))
+                .then(a.id.cmp(&b.id))
         });
-        // Keep one representative per exact-copy set in global visual matching.
-        // Expand it again when a differently encoded version matches the set.
-        if let Some(representative) = group.iter().find(|p| p.perceptual_hash.is_some()) {
-            copies.insert(representative.id.clone(), group.clone());
-            candidates.push(representative.clone());
-        }
-        if group.len() > 1 {
-            groups.push(crate::models::DuplicateGroup {
-                sha256: hash,
-                count: group.len() as i64,
-                kind: "exact".into(),
-                photos: group,
-            });
-        }
-    }
-    for cluster in cluster_similar_photos(&candidates) {
-        let mut expanded: Vec<Photo> = cluster
-            .into_iter()
-            .flat_map(|p| copies.remove(&p.id).unwrap_or_else(|| vec![p]))
-            .collect();
-        expanded.sort_by(|a, b| a.absolute_path.cmp(&b.absolute_path).then(a.id.cmp(&b.id)));
-        let key = format!(
-            "similar-{}",
-            moment_signature(&expanded.iter().map(|p| p.id.clone()).collect::<Vec<_>>())
-        );
+        let exact_hash = cluster[0]
+            .sha256
+            .as_deref()
+            .filter(|hash| !hash.is_empty())
+            .filter(|hash| cluster.iter().all(|p| p.sha256.as_deref() == Some(*hash)));
+        let (kind, key) = if let Some(hash) = exact_hash {
+            ("exact", hash.to_string())
+        } else {
+            (
+                "similar",
+                format!(
+                    "similar-{}",
+                    moment_signature(&cluster.iter().map(|p| p.id.clone()).collect::<Vec<_>>())
+                ),
+            )
+        };
         groups.push(crate::models::DuplicateGroup {
             sha256: key,
-            count: expanded.len() as i64,
-            kind: "similar".into(),
-            photos: expanded,
+            count: cluster.len() as i64,
+            kind: kind.into(),
+            photos: cluster,
         });
     }
     groups.sort_by(|a, b| {
@@ -1145,6 +1126,57 @@ async fn save_moment(
     Ok(())
 }
 
+fn thumbnail_phash(path: &str) -> Option<(u64, f32, [f32; 3])> {
+    let image = image::open(path)
+        .ok()?
+        .resize_exact(32, 32, image::imageops::FilterType::Triangle)
+        .to_rgb8();
+    let mut gray = [0.0_f32; 1024];
+    let mut mean = [0.0_f32; 3];
+    for (index, pixel) in image.pixels().enumerate() {
+        for channel in 0..3 {
+            mean[channel] += pixel[channel] as f32 / 1024.0;
+        }
+        gray[index] = 0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32;
+    }
+    let gray_mean = gray.iter().sum::<f32>() / 1024.0;
+    let contrast = (gray.iter().map(|v| (v - gray_mean).powi(2)).sum::<f32>() / 1024.0).sqrt();
+    static BASIS: std::sync::OnceLock<[[f32; 32]; 8]> = std::sync::OnceLock::new();
+    let basis = BASIS.get_or_init(|| {
+        std::array::from_fn(|frequency| {
+            std::array::from_fn(|position| {
+                ((2 * position + 1) as f32 * frequency as f32 * std::f32::consts::PI / 64.0).cos()
+            })
+        })
+    });
+    let mut horizontal = [[0.0_f32; 8]; 32];
+    for y in 0..32 {
+        for u in 0..8 {
+            horizontal[y][u] = (0..32).map(|x| gray[y * 32 + x] * basis[u][x]).sum();
+        }
+    }
+    let mut coefficients = [0.0_f32; 64];
+    for v in 0..8 {
+        for u in 0..8 {
+            coefficients[v * 8 + u] = (0..32).map(|y| horizontal[y][u] * basis[v][y]).sum();
+        }
+    }
+    let mut sorted = coefficients[1..].to_vec();
+    sorted.sort_by(f32::total_cmp);
+    let median = sorted[sorted.len() / 2];
+    let hash = coefficients
+        .iter()
+        .enumerate()
+        .fold(0_u64, |bits, (i, value)| {
+            if i != 0 && *value > median {
+                bits | (1_u64 << i)
+            } else {
+                bits
+            }
+        });
+    Some((hash, contrast, mean))
+}
+
 pub fn cluster_similar_photos(photos: &[Photo]) -> Vec<Vec<Photo>> {
     let n = photos.len();
     let mut parent: Vec<usize> = (0..n).collect();
@@ -1173,16 +1205,36 @@ pub fn cluster_similar_photos(photos: &[Photo]) -> Vec<Vec<Photo>> {
                 .and_then(|h| u64::from_str_radix(h, 16).ok())
         })
         .collect();
+    let perceptual: Vec<_> = photos
+        .iter()
+        .map(|p| p.thumbnail_path.as_deref().and_then(thumbnail_phash))
+        .collect();
     for i in 0..n {
-        let Some(h1) = hashes[i] else {
-            continue;
-        };
         for j in (i + 1)..n {
-            let Some(h2) = hashes[j] else {
-                continue;
+            let exact = photos[i]
+                .sha256
+                .as_deref()
+                .filter(|h| !h.is_empty())
+                .is_some_and(|h| photos[j].sha256.as_deref() == Some(h));
+            let dhash_distance = hashes[i].zip(hashes[j]).map(|(a, b)| (a ^ b).count_ones());
+            let visual = match (dhash_distance, perceptual[i], perceptual[j]) {
+                (Some(d), Some((a, contrast_a, color_a)), Some((b, contrast_b, color_b))) => {
+                    let phash_distance = (a ^ b).count_ones();
+                    let color_gap = color_a
+                        .iter()
+                        .zip(color_b)
+                        .map(|(x, y)| (x - y).abs())
+                        .fold(0.0_f32, f32::max);
+                    if contrast_a < 8.0 || contrast_b < 8.0 {
+                        d <= 4 && phash_distance <= 4 && color_gap <= 20.0
+                    } else {
+                        (d <= 12 && phash_distance <= 18) || (phash_distance <= 8 && d <= 24)
+                    }
+                }
+                (Some(d), _, _) => d <= 12,
+                _ => false,
             };
-            // 12 bits: the "similar" tier of the shared similarity taxonomy.
-            if (h1 ^ h2).count_ones() <= 12 {
+            if exact || visual {
                 union(&mut parent, i, j);
             }
         }
@@ -1319,12 +1371,12 @@ mod tests {
             &crate::db::all_photos(&pool).await.unwrap(),
             &std::collections::HashSet::new(),
         );
-        let exact = groups.iter().find(|g| g.kind == "exact").unwrap();
-        assert_eq!(exact.count, 2);
-        assert!(exact.photos.iter().any(|p| p.filename == "IMG_0001.png"));
-        assert!(exact.photos.iter().any(|p| p.filename == "IMG_9999.png"));
-        let similar = groups.iter().find(|g| g.kind == "similar").unwrap();
-        assert_eq!(similar.count, 3); // The exact-copy pair stays eligible for matching its TIFF export.
+        assert_eq!(groups.len(), 1); // A photo appears in one group, even with exact and encoded copies.
+        let similar = &groups[0];
+        assert_eq!(similar.kind, "similar");
+        assert_eq!(similar.count, 3);
+        assert!(similar.photos.iter().any(|p| p.filename == "IMG_0001.png"));
+        assert!(similar.photos.iter().any(|p| p.filename == "IMG_9999.png"));
 
         let original_id: String =
             sqlx::query_scalar("SELECT id FROM photos WHERE filename = 'IMG_0001.png'")

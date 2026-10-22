@@ -451,6 +451,7 @@ mod tests {
 
     fn open_face() -> DetectedFace {
         DetectedFace {
+            landmarks: None,
             bbox: BoundingBox {
                 x: 10.0,
                 y: 10.0,

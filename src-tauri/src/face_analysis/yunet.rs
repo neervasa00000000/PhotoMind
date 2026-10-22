@@ -316,6 +316,13 @@ fn enrich_face(gray: &GrayImage, raw: RawDetection) -> DetectedFace {
 
     DetectedFace {
         bbox: raw.bbox,
+        landmarks: Some([
+            raw.right_eye,
+            raw.left_eye,
+            raw.nose,
+            raw.mouth_right,
+            raw.mouth_left,
+        ]),
         detection_confidence: raw.score,
         face_sharpness,
         left_eye: Some(left_eye),

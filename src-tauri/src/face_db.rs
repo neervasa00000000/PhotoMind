@@ -311,6 +311,7 @@ struct FaceRow {
 impl FaceRow {
     fn into_detected(self) -> DetectedFace {
         DetectedFace {
+            landmarks: None,
             bbox: crate::face_analysis::types::BoundingBox {
                 x: self.bbox_x as f32,
                 y: self.bbox_y as f32,

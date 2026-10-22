@@ -1,3 +1,4 @@
+pub mod recognition;
 pub mod sharpness;
 #[cfg(test)]
 mod tests_logic;

@@ -2,6 +2,22 @@
 
 PhotoMind includes third-party components that retain their respective upstream licenses.
 
+## SFace Face Recognition Model
+
+**Component:** SFace quantized face recognition model
+
+**File:** `src-tauri/models/face_recognition_sface_2021dec_int8.onnx`
+
+**Purpose:** Offline descriptors for possible same-person groups.
+
+**Upstream:** OpenCV Zoo — face_recognition_sface
+
+**License:** Apache License 2.0, preserved in `third_party/sface-LICENSE` and bundled with the app.
+
+**SHA-256 Checksum:** `2b0e941e6f16cc048c20aee0c8e31f569118f65d702914540f7bfdc14048d78a`
+
+---
+
 ## YuNet Face Detection Model
 
 **Component:** YuNet face detection model

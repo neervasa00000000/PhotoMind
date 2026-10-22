@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const ANALYZER_VERSION: &str = "face-v2-yunet-decoded";
+pub const ANALYZER_VERSION: &str = "face-v3-yunet-sface";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -54,6 +54,9 @@ pub struct ExpressionAnalysis {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectedFace {
     pub bbox: BoundingBox,
+    /// YuNet's five points in image coordinates; used only while generating a local descriptor.
+    #[serde(skip)]
+    pub landmarks: Option<[(f32, f32); 5]>,
     pub detection_confidence: f32,
     pub face_sharpness: Option<f32>,
     pub left_eye: Option<EyeAnalysis>,

@@ -63,7 +63,7 @@ PhotoMind scans your photo folders and helps you:
 
 ### Face Analysis
 
-PhotoMind includes local face detection to help identify photos with people. The People tab compares detected face crops locally and shows only strong possible same-person matches. These are suggestions, not verified identities; similar-looking people may appear together and changes in lighting or pose may prevent a match. Face descriptors remain in the local SQLite database. Eye-state analysis is currently **experimental** and does not affect ranking while validation is ongoing. Face detection runs locally using the bundled YuNet model.
+PhotoMind includes local face detection to help identify photos with people. The People tab compares compact face descriptors from the bundled SFace model and shows possible same-person groups. These are suggestions, not verified identities; very small, blurry, or side-view faces may remain unmatched. Face descriptors remain in the local SQLite database. Eye-state analysis is currently **experimental** and does not affect ranking while validation is ongoing. Both YuNet detection and SFace matching run locally with no separate installation.
 
 ## How To Use
 
@@ -141,6 +141,7 @@ PhotoMind is built with:
 - **Database:** SQLite (local)
 - **Image Processing:** Rust image libraries
 - **Face Detection:** YuNet (ONNX model, MIT licensed)
+- **Face Grouping:** SFace (quantized ONNX model, Apache 2.0 licensed)
 
 Hashing, visual matching, technical quality analysis, face detection, and possible same-person grouping run on the device. No LLM or remote service is used.
 
