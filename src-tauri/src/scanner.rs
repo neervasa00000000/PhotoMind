@@ -978,11 +978,19 @@ fn index_one_photo(
     })
 }
 
-fn hamming_distance(hex1: &str, hex2: &str) -> Option<u32> {
-    crate::similarity::hash_distance(hex1, hex2)
+fn photo_time(photo: &PhotoIndex) -> Option<DateTime<Utc>> {
+    photo
+        .capture_time
+        .as_deref()
+        .or(photo.created_at.as_deref())
+        .and_then(parse_photo_datetime)
 }
 
 pub async fn generate_moments(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
+    // A moment is a short capture-time burst, even when the photographer turns
+    // toward a different scene. Visual hashes belong to duplicate detection.
+    const MAX_GAP_SECONDS: i64 = 180;
+    const MAX_SPAN_SECONDS: i64 = 900;
     let mut tx = pool.begin().await?;
     let old_members: Vec<(String, String)> = sqlx::query_as(
         "SELECT moment_id, id FROM photos WHERE moment_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM bin_entries b WHERE b.photo_id = photos.id) ORDER BY id"
@@ -1009,36 +1017,33 @@ pub async fn generate_moments(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error
         .execute(&mut *tx)
         .await?;
 
-    let photos: Vec<PhotoIndex> = sqlx::query_as(
+    let mut photos: Vec<PhotoIndex> = sqlx::query_as(
         r#"SELECT id, absolute_path, filename, file_size, created_at, capture_time, sha256, perceptual_hash, thumbnail_path
-           FROM photos WHERE NOT EXISTS (SELECT 1 FROM bin_entries b WHERE b.photo_id = photos.id) AND NOT EXISTS (SELECT 1 FROM logical_photos l WHERE l.paired_id = photos.id) ORDER BY COALESCE(capture_time, created_at) ASC, id ASC"#
+           FROM photos WHERE NOT EXISTS (SELECT 1 FROM bin_entries b WHERE b.photo_id = photos.id) AND NOT EXISTS (SELECT 1 FROM logical_photos l WHERE l.paired_id = photos.id)"#
     )
     .fetch_all(&mut *tx)
     .await?;
+    photos.sort_by(|a, b| photo_time(a).cmp(&photo_time(b)).then(a.id.cmp(&b.id)));
 
     let mut current_moment_photos: Vec<PhotoIndex> = Vec::new();
     let mut current_moment_start: Option<chrono::DateTime<Utc>> = None;
 
     for photo in photos {
-        let time = photo
-            .capture_time
-            .as_deref()
-            .or(photo.created_at.as_deref())
-            .and_then(parse_photo_datetime);
+        let time = photo_time(&photo);
 
         let mut belongs_to_moment = current_moment_photos.is_empty();
 
         if !belongs_to_moment {
             let last = current_moment_photos.last().unwrap();
-            let similar = match (&photo.perceptual_hash, &last.perceptual_hash) {
-                (Some(h1), Some(h2)) => hamming_distance(h1, h2).map(|d| d <= 16).unwrap_or(false),
+            let last_time = photo_time(last);
+            belongs_to_moment = match (current_moment_start, last_time, time) {
+                (Some(start), Some(previous), Some(next)) => {
+                    let gap = next.signed_duration_since(previous).num_seconds();
+                    let span = next.signed_duration_since(start).num_seconds();
+                    (0..=MAX_GAP_SECONDS).contains(&gap) && (0..=MAX_SPAN_SECONDS).contains(&span)
+                }
                 _ => false,
             };
-            let close_in_time = match (current_moment_start, time) {
-                (Some(t1), Some(t2)) => t2.signed_duration_since(t1).num_seconds().abs() <= 8,
-                _ => false,
-            };
-            belongs_to_moment = close_in_time && similar;
         }
 
         if !belongs_to_moment && !current_moment_photos.is_empty() {
@@ -1622,6 +1627,35 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[tokio::test]
+    async fn moments_group_nearby_capture_times_even_when_images_look_different() {
+        let dir = test_dir();
+        let pool = crate::db::init_db(&dir).await.unwrap();
+        for (id, time, hash) in [
+            ("a", "2026-09-17T10:00:00Z", "0000000000000000"),
+            ("b", "2026-09-17T10:01:30Z", "ffffffffffffffff"),
+            ("c", "2026-09-17T10:25:00Z", "aaaaaaaaaaaaaaaa"),
+        ] {
+            sqlx::query("INSERT INTO photos (id, absolute_path, filename, file_size, capture_time, perceptual_hash) VALUES (?, ?, ?, 1, ?, ?)")
+                .bind(id).bind(id).bind(id).bind(time).bind(hash)
+                .execute(&pool).await.unwrap();
+        }
+        generate_moments(&pool).await.unwrap();
+        let groups: Vec<(i64,)> = sqlx::query_as("SELECT photo_count FROM moment_groups")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(groups, vec![(2,)]);
+        let unrelated: Option<String> =
+            sqlx::query_scalar("SELECT moment_id FROM photos WHERE id = 'c'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(unrelated.is_none());
+        pool.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn identical_files_have_identical_sha256() {
         let dir = test_dir();
@@ -1657,18 +1691,6 @@ mod tests {
         assert_eq!((processed.width, processed.height), (100, 80));
 
         std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn similar_hashes_have_small_hamming_distance() {
-        assert_eq!(
-            hamming_distance("0000000000000000", "0000000000000001"),
-            Some(1)
-        );
-        assert_eq!(
-            hamming_distance("ffffffffffffffff", "0000000000000000"),
-            Some(64)
-        );
     }
 
     /// Phase 0 test: a corrupt/truncated JPEG must not panic the process.

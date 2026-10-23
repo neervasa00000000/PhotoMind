@@ -6,8 +6,13 @@ use std::collections::HashSet;
 
 const SIGNATURE_VERSION: &str = "sface-int8-v1";
 // OpenCV's 1:1 cosine threshold is 0.363. Use a margin for automatic groups.
-const GROUP_THRESHOLD: f32 = 0.40;
-const CENTROID_THRESHOLD: f32 = 0.35;
+// A pairwise verification threshold is too permissive for a gallery: one
+// mistaken edge can join two entire identities. Require a strong link and
+// agreement between every pair of faces when extending a group.
+const GROUP_LINK_THRESHOLD: f32 = 0.60;
+const MIN_CROSS_GROUP_SCORE: f32 = 0.45;
+const MEAN_CROSS_GROUP_SCORE: f32 = 0.50;
+const MIN_GROUP_FACE_PIXELS: f64 = 40.0;
 
 #[derive(Clone)]
 struct Candidate {
@@ -80,22 +85,6 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-fn centroid(members: &[usize], candidates: &[Candidate]) -> Vec<f32> {
-    let mut result = vec![0.0; 128];
-    for &index in members {
-        for (sum, value) in result.iter_mut().zip(&candidates[index].signature) {
-            *sum += value;
-        }
-    }
-    let norm = result.iter().map(|v| v * v).sum::<f32>().sqrt();
-    if norm > 1e-8 {
-        for value in &mut result {
-            *value /= norm;
-        }
-    }
-    result
-}
-
 fn group_candidates(candidates: &[Candidate]) -> Vec<PersonGroupIds> {
     let mut edges = Vec::new();
     for i in 0..candidates.len() {
@@ -104,7 +93,7 @@ fn group_candidates(candidates: &[Candidate]) -> Vec<PersonGroupIds> {
                 continue;
             }
             let score = cosine(&candidates[i].signature, &candidates[j].signature);
-            if score >= GROUP_THRESHOLD {
+            if score >= GROUP_LINK_THRESHOLD {
                 edges.push((score, i, j));
             }
         }
@@ -134,11 +123,18 @@ fn group_candidates(candidates: &[Candidate]) -> Vec<PersonGroupIds> {
         {
             continue;
         }
-        if cosine(
-            &centroid(&members[a], candidates),
-            &centroid(&members[b], candidates),
-        ) < CENTROID_THRESHOLD
-        {
+        let mut minimum = 1.0_f32;
+        let mut total = 0.0_f32;
+        let mut pairs = 0;
+        for &left in &members[a] {
+            for &right in &members[b] {
+                let score = cosine(&candidates[left].signature, &candidates[right].signature);
+                minimum = minimum.min(score);
+                total += score;
+                pairs += 1;
+            }
+        }
+        if minimum < MIN_CROSS_GROUP_SCORE || total / (pairs as f32) < MEAN_CROSS_GROUP_SCORE {
             continue;
         }
         parent[b] = a;
@@ -179,10 +175,12 @@ pub async fn likely_same_people(pool: &SqlitePool) -> Result<Vec<PersonGroupIds>
         "SELECT f.photo_id, f.face_index, s.signature
          FROM photo_faces f JOIN photos p ON p.id = f.photo_id
          JOIN face_signatures s ON s.photo_id = f.photo_id AND s.face_index = f.face_index
-         WHERE s.version = ? AND NOT EXISTS (SELECT 1 FROM bin_entries b WHERE b.photo_id = p.id)
+         WHERE s.version = ? AND MIN(f.bbox_width, f.bbox_height) >= ?
+           AND NOT EXISTS (SELECT 1 FROM bin_entries b WHERE b.photo_id = p.id)
          ORDER BY p.absolute_path, f.face_index",
     )
     .bind(SIGNATURE_VERSION)
+    .bind(MIN_GROUP_FACE_PIXELS)
     .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -295,6 +293,29 @@ mod tests {
             .collect::<HashSet<_>>()
             .len()
             == g.faces.len()));
+    }
+    #[test]
+    fn a_bridge_match_cannot_merge_different_people() {
+        let rows = vec![
+            Candidate {
+                photo_id: "a".into(),
+                face_index: 0,
+                signature: feature(1.0, 0.0),
+            },
+            Candidate {
+                photo_id: "b".into(),
+                face_index: 0,
+                signature: feature(0.8, 0.6),
+            },
+            Candidate {
+                photo_id: "c".into(),
+                face_index: 0,
+                signature: feature(0.28, 0.96),
+            },
+        ];
+        let groups = group_candidates(&rows);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].faces.len(), 2);
     }
     #[tokio::test]
     async fn binned_faces_disappear_from_groups() {
